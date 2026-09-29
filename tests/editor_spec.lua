@@ -120,15 +120,28 @@ decoded=M.decode(raw); eq(#decoded.notes,2); eq(decoded.notes[1].e,20); eq(decod
 notes=M.copy(decoded.notes); notes[1].pitch=65
 result=M.decode(M.encode(decoded,notes)); eq(#result.notes,2); eq(result.events[#result.events-1].msg:byte(2),72)
 
-local mapping='6 m'; local state={}; local writes=0
+-- Mirrors REAPER: a numeric command ID is stored and read back as its named ID;
+-- '_RS... c' is not understood and becomes "No action" ('0').
+local mapping='6 m'; local state={}
 local registered
+local function set_modifier(_,_,v)
+  if v:match('^%d+$') then mapping=v=='123' and '_RS_LIVE' or v
+  elseif v:match(' m$') or v=='-1' then mapping=v
+  else mapping='0' end
+end
 local r={AddRemoveReaScript=function(_,_,path) registered=registered or path; return 123 end,
   ReverseNamedCommandLookup=function() return 'RS_LIVE' end,
-  GetMouseModifier=function() return mapping end,SetMouseModifier=function(_,_,v) mapping=v; writes=writes+1 end,
+  GetMouseModifier=function() return mapping end,SetMouseModifier=set_modifier,
   GetExtState=function(_,k) return state[k] or '' end,SetExtState=function(_,k,v) state[k]=v end,
   DeleteExtState=function(_,k) state[k]=nil end}
-I.install(r,'R/'); eq(registered,'R/Fluent MIDI Editor - Open.lua'); eq(mapping,'_RS_LIVE c'); eq(state.previous_double_click,'6 m')
+eq(I.install(r,'R/'),123); eq(registered,'R/Fluent MIDI Editor - Open.lua'); eq(mapping,'_RS_LIVE'); eq(state.previous_double_click,'6 m')
 I.install(r,'R/'); eq(state.previous_double_click,'6 m','reinstall preserves original')
 local restored=I.restore(r); eq(restored,true); eq(mapping,'6 m')
 I.install(r,'R/'); mapping='another action c'; restored=I.restore(r); eq(restored,false); eq(mapping,'another action c')
+-- 0.9.0 left "No action" behind; restore must repair it.
+state={previous_double_click='6 m',double_click_command='_RS_LIVE c'}; mapping='0'
+restored=I.restore(r); eq(restored,true); eq(mapping,'6 m')
+-- A rejected action is reported and the previous one is put back.
+state={}; mapping='6 m'; r.SetMouseModifier=function(_,_,v) mapping=v:match('^%d+$') and '0' or v end
+local id,err=I.install(r,'R/'); eq(id,nil); assert(err:match('did not accept')); eq(mapping,'6 m')
 return count

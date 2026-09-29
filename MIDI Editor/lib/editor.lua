@@ -271,7 +271,8 @@ function E.run(r,initial_item,dir)
     if button('Options',false,55) then ImGui.OpenPopup(ctx,'options') end
     if ImGui.BeginPopup(ctx,'options') then
       if ImGui.MenuItem(ctx,'Set as default editor (MIDI double-click)') then
-        integration.install(r,dir:sub(1,-5)); -- dir ends in 'lib/' S.status='Double-clicking a MIDI clip opens Fluent MIDI Editor'
+        local ok,err=integration.install(r,dir:sub(1,-5)) -- dir ends in 'lib/'
+        S.status=ok and 'Double-clicking a MIDI clip opens Fluent MIDI Editor' or err
       end
       if ImGui.MenuItem(ctx,'Restore previous double-click') then local _,message=integration.restore(r); S.status=message end
       ImGui.Separator(ctx)
