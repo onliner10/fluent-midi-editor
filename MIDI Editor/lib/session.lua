@@ -218,7 +218,7 @@ function G.new(r,M,backend,repetitions,phrase)
         if phrase_end and not n.id then ending=math.max(ending,phrase_end-b.offset_in_view) end
       end
       endings[i]=ending
-      local source=event_edits and event_edits[i] and M.decode(event_edits[i].raw,b.from_ppq) or b.source
+      local source=event_edits and event_edits[i] and M.decode(event_edits[i].raw,b.from_ppq,b.known_mpe) or b.source
       local encoded=M.encode(source,split[i],b.to_ppq,math.max(b.source.end_ppq,b.to_ppq(ending)))
       if encoded~=b.source.raw or ending>b.length+1e-7 then
         if r.GetMediaItemInfo_Value(b.item,'C_LOCK')&1~=0 then return false,'Locked clip: '..b.track_name end

@@ -31,7 +31,9 @@ function B.new(r,M)
     if self.looped then self.origin=r.MIDI_GetProjQNFromPPQPos(self.take,0) end
     self.from_ppq=function(ppq) return r.MIDI_GetProjQNFromPPQPos(self.take,ppq)-self.origin end
     self.to_ppq=function(qn) return r.MIDI_GetPPQPosFromProjQN(self.take,qn+self.origin) end
-    self.source=M.decode(raw,self.from_ppq)
+    -- Set when the editor writes an MPE clip; see attach_expression.
+    self.known_mpe=select(2,r.GetSetMediaItemTakeInfo_String(self.take,'P_EXT:FluentMIDIMPE','',false))=='1'
+    self.source=M.decode(raw,self.from_ppq,self.known_mpe)
     self.single,self.length=self:extent(self.origin,self.source.end_ppq)
     self.can_extend=not self.looped or self.single
     self.notes=self.source.notes
@@ -113,7 +115,7 @@ function B.new(r,M)
       return false,'The copy extends past the source loop. Lengthen the source in the native editor or turn off Loop source.'
     end
     local end_ppq=math.max(self.source.end_ppq,self.to_ppq(ending))
-    local source=event_source and M.decode(event_source,self.from_ppq) or self.source
+    local source=event_source and M.decode(event_source,self.from_ppq,self.known_mpe) or self.source
     local encoded=M.encode(source,notes,self.to_ppq,end_ppq)
     if encoded==raw and ending<=self.length+1e-7 then self.notes=notes; return true end
     local chunk_ok,chunk=r.GetItemStateChunk(self.item,'',false)
@@ -125,6 +127,7 @@ function B.new(r,M)
           self.origin+ending),'Could not extend the clip')
       end
       assert(r.MIDI_SetAllEvts(self.take,encoded),'Could not write MIDI')
+      if source.mpe and not self.known_mpe then r.GetSetMediaItemTakeInfo_String(self.take,'P_EXT:FluentMIDIMPE','1',true) end
       -- MIDI_SetItemExtents turns Loop source off. A looped clip keeps it: the
       -- source already ends at end_ppq, so only the item grows.
       if ending>self.length+1e-7 and self.looped then

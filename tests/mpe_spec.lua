@@ -103,7 +103,8 @@ eq(copied.mpe,true)
 
 -- 4. Deleting a note deletes its expression, not the neighbour's.
 notes=M.copy(mpe.notes); table.remove(notes,1)
-local deleted=decode(encode(mpe,notes))
+-- One voice is left; the editor remembers the clip was MPE when it wrote it.
+local deleted=M.decode(encode(mpe,notes),from,true)
 eq(#events_of(deleted,1,0,3840),0,'deleted note leaves no bend behind')
 eq(shape(find(deleted,64)),shape(e3))
 
