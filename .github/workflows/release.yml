@@ -1,14 +1,21 @@
-# Tags and publishes the version in the Open script's @version when it is new.
-# ReaPack's index.xml points at files under that tag, so the tag must exist
-# before index.xml on main names the version.
+# Publishes releases and keeps the ReaPack index (index.xml on main) in step.
+# - main: the Open script's @version, when new, becomes the stable tag v<version>.
+# - dev: every push that changes the editor becomes the dev build
+#   v<version>-dev.<n>, a pre-release. ReaPack installs it only for people who
+#   enable pre-releases for the package; everyone else stays on stable.
+# The index is regenerated from the tags. Each version in it points at files
+# under its tag, so the tag is pushed first.
 name: Release
 on:
   push:
-    branches: [main]
-    paths: ['MIDI Editor/Fluent MIDI Editor - Open.lua']
+    branches: [main, dev]
+    paths: ['MIDI Editor/**']
   workflow_dispatch:
 permissions:
   contents: write
+concurrency:
+  group: release
+  cancel-in-progress: false
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -20,13 +27,39 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version=$(sed -n 's/^-- @version //p' "MIDI Editor/Fluent MIDI Editor - Open.lua")
-          tag="v$version"
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
-            echo "$tag already exists"; exit 0
+          base=$(sed -n 's/^-- @version //p' "MIDI Editor/Fluent MIDI Editor - Open.lua")
+          case "$base" in
+            *[!0-9.]*|'') echo "::error::@version must be a plain version like 0.11.0; dev builds are numbered automatically."; exit 1 ;;
+          esac
+          if [ "$GITHUB_REF_NAME" = main ]; then
+            version=$base
+            if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then echo "v$version already exists"; exit 0; fi
+            title="Fluent MIDI Editor $version (beta)"; kind=
+          else
+            if git rev-parse -q --verify "refs/tags/v$base" >/dev/null; then
+              echo "::error::v$base is already released. On dev, set @version to the next release, e.g. the next minor version."; exit 1
+            fi
+            last=$(git tag --list "v$base-dev.*" --sort=-v:refname | head -1)
+            if [ -n "$last" ] && [ "$(git rev-parse "$last^{commit}")" = "$GITHUB_SHA" ]; then echo "$last is this commit"; exit 0; fi
+            n=1; [ -n "$last" ] && n=$(( ${last##*-dev.} + 1 ))
+            version="$base-dev.$n"
+            title="Fluent MIDI Editor $version (dev build)"; kind=--prerelease
           fi
+          tag="v$version"
           git tag "$tag" "$GITHUB_SHA"
           git push origin "$tag"
           notes="docs/releases/$tag.md"
           if [ -f "$notes" ]; then set -- --notes-file "$notes"; else set -- --generate-notes; fi
-          gh release create "$tag" --title "Fluent MIDI Editor $version (beta)" "$@"
+          gh release create "$tag" --title "$title" --target "$GITHUB_SHA" $kind "$@"
+      - name: Publish in the ReaPack index on main
+        run: |
+          # This commit's generator, run in main's checkout (main may be older).
+          git show "$GITHUB_SHA:tools/make_index.py" > "$RUNNER_TEMP/make_index.py"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch -q origin main
+          git checkout -q -B main origin/main
+          python "$RUNNER_TEMP/make_index.py"
+          if git diff --quiet index.xml; then echo 'index.xml is current'; exit 0; fi
+          git commit -q -m "Publish $(grep -o 'version name="[^"]*"' index.xml | tail -1 | cut -d'"' -f2) in the ReaPack index" index.xml
+          git push origin main

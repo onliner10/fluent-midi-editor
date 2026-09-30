@@ -1,5 +1,5 @@
 -- @description Fluent MIDI Editor
--- @version 0.10.0
+-- @version 0.11.0
 -- @author onliner10
 -- @about
 --   Finally, a MIDI editor for REAPER that feels good. A dockable piano roll
