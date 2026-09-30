@@ -164,10 +164,17 @@ local function attach_expression(events,notes,paired,from_ppq,known)
     for i=2,#list do if list[i].on.pos<list[i-1].off.pos then mono=false end end
     if mono then owning[channel]=list else shared_channels[channel]=true end
   end
+  -- A modulation lane written for CC74 on a channel (its header is a text
+  -- event, see modulation.lua) is the lane's timbre, not the notes'.
+  local lanes={}
+  for _,e in ipairs(events) do
+    local channel=e.msg:match('^\255\1LMOD1|L|(%d+)|74|') if channel then lanes[tonumber(channel)]=true end
+  end
   -- One parse per event: dimension, channel and value of each expression event.
   local parsed,changes,expressive,found={}, {}, {}, 0
   for i,e in ipairs(events) do
     local dimension,channel,value=expression(e.msg)
+    if dimension=='tb' and lanes[channel] then dimension=nil end
     if dimension and owning[channel] then
       parsed[i]=channel
       changes[channel]=changes[channel] or {}; table.insert(changes[channel],{dimension,value,e.pos})

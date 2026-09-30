@@ -19,9 +19,10 @@ function A.meta(msg)
   if not ch or ch%1~=0 or ch<0 or ch>15 or not cc or cc%1~=0 or cc<0 or cc>119 then return end
   return fields,A.key(ch,cc),ch,cc
 end
--- CCs a note owns (MPE timbre) move with that note, not with a lane.
-function A.cc_key(event)
-  if event.owner then return end
+-- CCs a note owns (MPE timbre) move with that note, not with a lane. A lane
+-- written over them replaces them: include_owned finds those too.
+function A.cc_key(event,include_owned)
+  if event.owner and not include_owned then return end
   local a,b=event.msg:byte(1,2)
   if #event.msg==3 and a&0xF0==0xB0 and b<120 then return A.key(a&15,b),a&15,b end
 end
@@ -31,7 +32,9 @@ function A.sort(points)
 end
 function A.controls(lane,i)
   local ps=lane.points; local a,b=ps[i],ps[i+1]; local dx,dy=b.t-a.t,b.v-a.v
-  if a.c1 and a.c2 then return a.c1,a.c2 end
+  -- Stored controls keep the shape of a cut segment (A.clip). They belong to
+  -- the segment ending at (ct, cv); once that point moves or goes, they lapse.
+  if a.c1 and a.c2 and (not a.ct or math.abs(a.ct-b.t)<1e-9 and a.cv==b.v) then return a.c1,a.c2 end
   local function slope(p,index)
     local weight=p.kind==2 and 1 or p.kind==1 and .5 or 0
     local prev,nextp=ps[math.max(1,index-1)],ps[math.min(#ps,index+1)]
@@ -75,7 +78,11 @@ function A.read(source,from_ppq)
         if finite(value) and value>=0 and value<=1 and kind and kind%1==0 and kind>=0 and kind<=3 and finite(bend) and math.abs(bend)<=1 and (offset==0 or offset==1) then
           local p={t=from_ppq(e.pos+offset),v=value,kind=kind,bend=bend,selected=false}
           local c1,c2=tonumber(fields[8]),tonumber(fields[9])
-          if finite(c1) and finite(c2) and c1>=0 and c1<=1 and c2>=0 and c2<=1 then p.c1,p.c2=c1,c2 end
+          if finite(c1) and finite(c2) and c1>=0 and c1<=1 and c2>=0 and c2<=1 then
+            p.c1,p.c2=c1,c2
+            local delta,cv=tonumber(fields[10]),tonumber(fields[11])
+            if finite(delta) and finite(cv) then p.ct=from_ppq(math.floor(e.pos+offset+delta+.5)); p.cv=cv end
+          end
           lane.points[#lane.points+1]=p
         end
       end
@@ -110,19 +117,29 @@ A.pack=pack
 local function header(lane)
   return A.prefix..table.concat({'L',lane.channel,lane.cc,hex(lane.label),hex(lane.fx_guid),hex(lane.param_ident),hex(lane.param_name),lane.mode or 'curve',lane.baseline or .5},'|')
 end
-local function knot(lane,p,pos,ending)
+-- pos: the knot's tick; tick(t): the tick of a time, to store where the
+-- segment of the knot's controls ends.
+local function knot(lane,p,pos,ending,tick)
   local offset=pos==ending and 1 or 0
   local message=A.prefix..string.format('P|%d|%d|%.17g|%d|%.17g|%d',lane.channel,lane.cc,p.v,p.kind or 0,p.bend or 0,offset)
-  if p.c1 and p.c2 then message=message..string.format('|%.17g|%.17g',p.c1,p.c2) end
+  if p.c1 and p.c2 then
+    message=message..string.format('|%.17g|%.17g',p.c1,p.c2)
+    if p.ct then message=message..string.format('|%d|%.17g',tick(p.ct)-pos,p.cv) end
+  end
   return {pos=pos-offset,flags=0,msg=message}
 end
+-- Knots are stored on ticks, so sample between the ticks: the lane read back
+-- from the clip then resamples to exactly the CC this produced.
 function A.samples(lane,to_ppq,end_ppq)
   local result={}; local ps=copy(lane.points); A.sort(ps)
+  local zero=to_ppq(0); local per_qn=to_ppq(1)-zero
+  for _,p in ipairs(ps) do p.t=(math.floor(to_ppq(p.t)+.5)-zero)/per_qn end
   local normalized=copy(lane); normalized.points=ps
   local previous,emitted=nil,{}
   local function add(q,v,force)
     local pos=math.floor(to_ppq(q)+.5); if pos>=end_ppq then return end
-    local value=clamp(math.floor(v*127+.5),0,127)
+    -- The epsilon keeps a flat 0.5 (63.5) from flickering between 63 and 64.
+    local value=clamp(math.floor(v*127+.5+1e-9),0,127)
     if emitted[pos] then emitted[pos].msg=string.char(0xB0|lane.channel,lane.cc,value); previous=value; return end
     if force or value~=previous then
       local e={pos=pos,flags=0,msg=string.char(0xB0|lane.channel,lane.cc,value)}
@@ -169,14 +186,14 @@ function A.write(source,changes,to_ppq,end_ppq)
         local pos=math.floor(to_ppq(p.t)+.5)
         -- End knots are physically inside the source, so native repeat/trim
         -- operations carry them. +1 reconstructs the exact boundary time.
-        generated[#generated+1]=knot(lane,p,pos,end_ppq)
+        generated[#generated+1]=knot(lane,p,pos,end_ppq,function(t) return math.floor(to_ppq(t)+.5) end)
       end
       for _,e in ipairs(A.samples(lane,to_ppq,end_ppq)) do generated[#generated+1]=e end
     end
   end
   local retained,remove_bezier={},false
   for i,e in ipairs(source.events) do
-    local _,key=A.meta(e.msg); local cc=A.cc_key(e)
+    local _,key=A.meta(e.msg); local cc=A.cc_key(e,true)
     local bezier=e.msg:sub(1,7)==string.char(0xFF,15)..'CCBZ '
     local drop=(key and replacement[key]) or (cc and replacement[cc]) or (bezier and remove_bezier)
     if not bezier then remove_bezier=cc and replacement[cc] end
@@ -218,7 +235,8 @@ function A.copy_range(source,a,z,keys)
     if lane.managed then
       events[#events+1]={pos=0,flags=0,msg=header(lane)}
       local clipped=A.clip(lane,a,z)
-      for _,p in ipairs(clipped.points) do events[#events+1]=knot(lane,p,math.floor(p.t-a+.5),math.floor(z-a+.5)) end
+      local function tick(t) return math.floor(t-a+.5) end
+      for _,p in ipairs(clipped.points) do events[#events+1]=knot(lane,p,tick(p.t),tick(z),tick) end
     end
   end end
   for _,e in ipairs(source.events) do
@@ -237,6 +255,10 @@ function A.clip(lane,a,z)
   for _,p in ipairs(lane.points) do if p.t>a and p.t<z then cuts[#cuts+1]={t=p.t,v=p.v} end end
   local finish_value=A.value(lane,z)
   for _,p in ipairs(lane.points) do if p.t==z then finish_value=p.v; break end end
+  -- A step holds its value up to z; the value at z belongs to what follows.
+  for j=1,#lane.points-1 do local p,nextp=lane.points[j],lane.points[j+1]
+    if p.t<z and nextp.t>=z then if p.kind==3 then finish_value=p.v end; break end
+  end
   cuts[#cuts+1]={t=z,v=finish_value}; clipped.points={}
   for i,cut in ipairs(cuts) do
     local t=cut.t; local p={t=t,v=cut.v,kind=0,bend=0}; clipped.points[#clipped.points+1]=p
@@ -252,6 +274,7 @@ function A.clip(lane,a,z)
           local function derivative(x) return 3*((1-x)^2*(c1-start.v)+2*(1-x)*x*(c2-c1)+x*x*(finish.v-c2)) end
           p.c1=clamp(A.segment(lane,index,u)+derivative(u)*(v-u)/3,0,1)
           p.c2=clamp(A.segment(lane,index,v)-derivative(v)*(v-u)/3,0,1)
+          p.ct,p.cv=cuts[i+1].t,cuts[i+1].v
         end
       else p.kind=3 end
     end
@@ -261,36 +284,43 @@ end
 function A.insert_range(source,fragment,destination,end_ppq)
   local events={}; local keys={}; local rebuilt={}
   local _,original=A.read(source); local _,incoming=A.read({events=fragment.events})
-  local ending=math.max(source.end_ppq,end_ppq or source.end_ppq)
+  -- Whole ticks: an end knot must land one tick before the source end.
+  local ending=math.floor(math.max(source.end_ppq,end_ppq or source.end_ppq)+.5)
+  local finish=destination+fragment.length
+  local function tick(t) return math.floor(t+.5) end
   for key,lane in pairs(incoming) do local old=original[key]
-    if lane.managed and old and old.managed then
-      -- Preserve the two outside curve pieces analytically. Two knots at the
-      -- same time represent a discontinuity without bending the previous part.
-      local merged=copy(old); merged.points={}; rebuilt[key]=true
+    -- A curve on either side makes the result a curve. Recorded CC joins it as
+    -- its points, the same points an unmanaged lane shows. The two outside
+    -- pieces are kept analytically; two knots at one time are a discontinuity.
+    if old and (lane.managed or old.managed) then
+      local merged=copy(old.managed and old or lane); merged.points={}; rebuilt[key]=true
       local function append(part,shift)
-        for _,p in ipairs(part.points) do local c=copy(p); c.t=c.t+(shift or 0); merged.points[#merged.points+1]=c end
+        for _,p in ipairs(part.points) do
+          local c=copy(p); c.t=c.t+(shift or 0); if c.ct then c.ct=c.ct+(shift or 0) end
+          merged.points[#merged.points+1]=c
+        end
       end
       if old.points[1] and old.points[1].t<destination then append(A.clip(old,old.points[1].t,destination)) end
       append(lane,destination)
-      local finish=destination+fragment.length
       if old.points[#old.points] and old.points[#old.points].t>finish then append(A.clip(old,finish,old.points[#old.points].t)) end
       events[#events+1]={pos=0,flags=0,msg=header(merged)}
-      for _,p in ipairs(merged.points) do events[#events+1]=knot(merged,p,math.floor(p.t+.5),ending) end
-      if finish<source.end_ppq then
-        local previous
-        for _,p in ipairs(old.native) do if p.t<=finish then previous=p end end
-        if previous and previous.t<finish then events[#events+1]={pos=finish,flags=0,msg=string.char(0xB0|old.channel,old.cc,math.floor(previous.v*127+.5))} end
-      end
+      for _,p in ipairs(merged.points) do events[#events+1]=knot(merged,p,tick(p.t),ending,tick) end
+    end
+    -- After the range the controller returns to the value the clip had there.
+    if old and finish<source.end_ppq then
+      local previous
+      for _,p in ipairs(old.native) do if p.t<=finish then previous=p end end
+      if previous and previous.t<finish then events[#events+1]={pos=finish,flags=0,msg=string.char(0xB0|old.channel,old.cc,math.floor(previous.v*127+.5))} end
     end
   end
   for _,e in ipairs(fragment.events) do local _,meta=A.meta(e.msg); local cc=A.cc_key(e); if meta or cc then keys[meta or cc]=true end end
   local remove_bezier=false
   for i,e in ipairs(source.events) do
     local _,meta=A.meta(e.msg); local cc=A.cc_key(e); local bezier=e.msg:sub(1,7)==string.char(0xFF,15)..'CCBZ '
-    local in_range=e.pos>=destination and e.pos<destination+fragment.length
+    local in_range=e.pos>=destination and e.pos<finish
     local drop=meta and rebuilt[meta] or in_range and ((meta and keys[meta]) or (cc and keys[cc]) or (bezier and remove_bezier))
     if not bezier then remove_bezier=cc and keys[cc] end
-    if not drop then local c=copy(e); if i==#source.events then c.pos=math.max(c.pos,end_ppq or c.pos) end; events[#events+1]=c end
+    if not drop then local c=copy(e); if i==#source.events then c.pos=math.max(c.pos,ending) end; events[#events+1]=c end
   end
   for _,e in ipairs(fragment.events) do local _,meta=A.meta(e.msg)
     if not (meta and rebuilt[meta]) then local c=copy(e); c.pos=c.pos+destination; events[#events+1]=c end
@@ -301,7 +331,12 @@ function A.retime(fragment,convert)
   local result=copy(fragment)
   for _,e in ipairs(result.events) do
     local fields=A.meta(e.msg); local offset=fields and fields[1]=='P' and tonumber(fields[7]) or 0
-    e.pos=convert(e.pos+offset)-offset
+    local pos=e.pos+offset
+    if fields and fields[1]=='P' and tonumber(fields[10]) then
+      fields[10]=string.format('%.17g',convert(pos+tonumber(fields[10]))-convert(pos))
+      e.msg=A.prefix..table.concat(fields,'|')
+    end
+    e.pos=convert(pos)-offset
   end
   result.length=convert(fragment.length)-convert(0)
   return result

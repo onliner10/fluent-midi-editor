@@ -37,7 +37,8 @@ function U.new(r,ImGui,ctx,M,A,B,S,dir,on_write)
     for i,l in ipairs(self.lanes) do if l.key==value.key then
       self.selected=i
       for _,p in ipairs(l.points) do for _,old in ipairs(value.points or {}) do
-        if old.selected and math.abs(p.t-old.t)<1e-5 and math.abs(p.v-old.v)<1e-8 then p.selected=true end
+        -- Points are stored on ticks, so compare where they land, not the beat.
+        if old.selected and math.abs(b.to_ppq(p.t)-b.to_ppq(old.t))<.5+1e-6 and math.abs(p.v-old.v)<1e-8 then p.selected=true end
       end end
     end end
     return ok
@@ -202,8 +203,13 @@ function U.new(r,ImGui,ctx,M,A,B,S,dir,on_write)
       end
       tip('Keeps the CC values. Native curves are replaced by segments between points.')
     else
-      if button('Curve',l.mode~='steps') then l.mode='curve' end
-      ImGui.SameLine(ctx); if button('Steps',l.mode=='steps') then l.mode='steps' end
+      -- The mode is part of the lane stored in the clip.
+      local function set_mode(mode)
+        if l.mode==mode or not editable(l) then return end
+        local draft=prepare(); draft.mode=mode; self:write(draft,mode=='steps' and 'Draw modulation as steps' or 'Draw modulation as a curve')
+      end
+      if button('Curve',l.mode~='steps') then set_mode('curve') end
+      ImGui.SameLine(ctx); if button('Steps',l.mode=='steps') then set_mode('steps') end
       ImGui.SameLine(ctx); if button('Snap',self.snap) then self.snap=not self.snap end
       tip('Shift temporarily enables snap. Same grid as the notes.')
       ImGui.SameLine(ctx); if button('Undo') then self:finish_pending(); r.Undo_DoUndo2(B.project); B:read(); self:reset(); on_write() end
