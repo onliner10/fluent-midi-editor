@@ -25,6 +25,8 @@ function E.run(r,initial_item,dir)
   for _,k in ipairs(saved) do S[k]=tonumber(r.GetExtState('FluentMIDIEditor',k)) or S[k] end
   S.grid=M.clamp(S.grid,1/128,4); S.velocity=M.clamp(S.velocity,1,127)
   S.channel=M.clamp(S.channel,0,15); S.rowh=M.clamp(S.rowh,10,42); S.lane=M.clamp(S.lane,65,220)
+  -- The row height chosen with Alt + wheel; fitting the view does not change it.
+  S.userRowh=S.rowh
   local token=tostring(r.time_precise())
   local palette={0x76C7BDFF,0xDE9CC5FF,0xE5C377FF,0x89B3EFFF,0xAECF84FF,0xCCAFF2FF}
   local function clip_color(index) return palette[((index or B.active)-1)%#palette+1] end
@@ -71,9 +73,16 @@ function E.run(r,initial_item,dir)
   attach(initial)
   local function reload(keep_capture)
     if mod_ui then mod_ui:reset(keep_capture) end
+    local before,range,raws=S.notes,S.range,{}
+    for i,b in ipairs(B.clips) do raws[i]=b.source and b.source.raw end
     if B:valid() then S.notes=M.copy(B:read() or {})
     else attach(B:selected_items()) end
     S.drag=nil; S.range=nil; rows()
+    -- A change elsewhere in the project (a fader, a track name) leaves the
+    -- MIDI as it was: keep what the user selected.
+    local same=#before==#S.notes and #raws==#B.clips
+    for i,b in ipairs(B.clips) do if not b.source or b.source.raw~=raws[i] then same=false end end
+    if same then for i,n in ipairs(S.notes) do n.selected=before[i].selected end; S.range=range end
   end
   local function commit(notes,label,phrase_end,event_edits)
     local ok,message=B:commit(notes,label,phrase_end,event_edits)
@@ -156,7 +165,11 @@ function E.run(r,initial_item,dir)
     end
     commit(notes,'Paste notes and modulation',S.cursor+S.clipboard.length,edits)
   end
-  local function fit(selection,width,height)
+  -- Fit the notes (selection: the selected ones) into the piano roll as it
+  -- was last drawn. rows_only keeps the time view; can_fold lets a pitch
+  -- range that does not fit even at the shortest rows fold to used pitches.
+  local function fit(selection,rows_only,can_fold)
+    local height=S.gridH or 420
     local a,b,lo,hi=M.bounds(S.notes,selection)
     if selection and not a then return end
     if not selection then
@@ -164,18 +177,30 @@ function E.run(r,initial_item,dir)
       local _,_,ghostLo,ghostHi=M.bounds(B.ghosts)
       if ghostLo then lo=math.min(lo or ghostLo,ghostLo); hi=math.max(hi or ghostHi,ghostHi) end
     end
-    S.start=math.max(0,(a or 0)-0.25); S.span=math.max(1,(b or 16)-S.start+0.5)
+    if not rows_only then S.start=math.max(0,(a or 0)-0.25); S.span=math.max(1,(b or 16)-S.start+0.5) end
     if lo then
-      local upper=S.rowIndex[hi] or 55; local lower=S.rowIndex[lo] or upper
-      local count=lower-upper+5
-      S.rowh=M.clamp((height or 420)/math.max(12,count),20,32)
-      S.row=math.max(0,(upper+lower)/2-1-(height or 420)/S.rowh/2)
+      local function span()
+        local upper=S.rowIndex[hi] or 55; local lower=S.rowIndex[lo] or upper
+        return upper,lower,lower-upper+5
+      end
+      local upper,lower,count=span()
+      if can_fold and not S.fold and height/count<10 then S.fold=true; rows(); upper,lower,count=span() end
+      S.rowh=M.clamp(height/math.max(12,count),10,32)
+      S.row=math.max(0,(upper+lower)/2-1-height/S.rowh/2)
     else S.row=math.max(0,(S.rowIndex[72] or 1)-1) end
     S.fit=false
   end
+  local function toggle_fold() S.fold=not S.fold; rows(); fit(false,true) end
   local function transport()
     if not B.project or r.EnumProjects(-1,'')~=B.project then return end
     if r.GetPlayStateEx(B.project)&1~=0 then r.OnStopButtonEx(B.project) else r.OnPlayButtonEx(B.project) end
+  end
+  -- Shift + click or drag on the ruler scrubs, as in Ableton: play from there.
+  local function scrub(q)
+    if not B.project or r.EnumProjects(-1,'')~=B.project then return end
+    S.cursor=q
+    r.SetEditCurPos2(B.project,r.TimeMap2_QNToTime(B.project,B.origin+q),false,true)
+    if r.GetPlayStateEx(B.project)&1==0 then r.OnPlayButtonEx(B.project) end
   end
   local function loop_selection()
     if not B:valid() then return end
@@ -214,9 +239,9 @@ function E.run(r,initial_item,dir)
       return
     end
     if key('B') then S.draw=not S.draw
-    elseif key('F') then S.fold=not S.fold; rows(); S.fit=true
-    elseif key('X') then fit(false)
-    elseif key('Z') then fit(true)
+    elseif key('F') then toggle_fold()
+    elseif key('X') then fit(false,false,true)
+    elseif key('Z') then fit(true,false,true)
     elseif key('D') and shift then duplicate()
     elseif key('Delete') or key('Backspace') then delete_selected()
     elseif key('0') then edit('Mute / unmute notes',function(notes) for _,n in ipairs(notes) do if n.selected then n.muted=not n.muted end end end)
@@ -237,7 +262,9 @@ function E.run(r,initial_item,dir)
             local anchor=shift and chosen[1].e or a
             local delta=dx*step
             if dx~=0 and snapping(alt) then delta=M.nudge_delta(anchor,dx,grid()) end
-            if shift and dx~=0 then M.resize(notes,delta,'right',0)
+            -- Shortening stops at one step; it never leaves a sliver of a note.
+            local shortest=math.huge; for _,n in ipairs(chosen) do shortest=math.min(shortest,n.e-n.s) end
+            if shift and dx~=0 then M.resize(notes,delta,'right',0,nil,math.min(step,shortest))
             else M.move(notes,delta,dp*(shift and 12 or 1),0) end
           end)
         else S.cursor=M.clamp(S.cursor+dx*step,0,B.length or math.huge) end
@@ -288,7 +315,7 @@ function E.run(r,initial_item,dir)
     ImGui.Separator(ctx)
     if button('Draw [B]',S.draw,77) then S.draw=not S.draw end
     ImGui.SameLine(ctx)
-    if button('Fold [F]',S.fold,68) then S.fold=not S.fold; rows(); S.fit=true end
+    if button('Fold [F]',S.fold,68) then toggle_fold() end
     ImGui.SameLine(ctx)
     if button('Snap [Ctrl+4]',S.snap,102) then S.snap=not S.snap end; tip('Ctrl+4: snap / Alt: temporarily invert snap')
     ImGui.SameLine(ctx); ImGui.SetNextItemWidth(ctx,80)
@@ -302,7 +329,7 @@ function E.run(r,initial_item,dir)
       ImGui.EndCombo(ctx)
     end
     ImGui.SameLine(ctx)
-    if button('Fit [X]',false,57) then fit(false) end
+    if button('Fit [X]',false,57) then fit(false,false,true) end
     ImGui.SameLine(ctx); text_muted('Add to: ')
     ImGui.SameLine(ctx); ImGui.TextColored(ctx,clip_color(B.active),B.track_name or '-')
   end
@@ -440,7 +467,8 @@ function E.run(r,initial_item,dir)
     local A={x=x,y=y,w=w,h=h,gx=x+64,gy=y+header_h,ry=y+header_h-24,gw=w-64,vh=math.min(S.lane,h*0.3)}
     S.timeline_x=A.gx; S.timeline_w=A.gw
     A.gh=h-header_h-A.vh-40; A.vy=A.gy+A.gh+20; A.bottom=A.vy+A.vh
-    if S.fit then fit(false,A.gw,A.gh) end
+    S.gridH=A.gh
+    if S.fit then fit(false,false,true) end
     S.row=M.clamp(S.row,0,math.max(0,#S.rows-math.floor(A.gh/S.rowh)))
     S.start=math.max(0,S.start)
     local playq=S.cursor
@@ -480,7 +508,7 @@ function E.run(r,initial_item,dir)
     end
     local function editable_time(q)
       local b=B.clips[B.active]
-      return not (b.repeating or b.looped) or q>=b.view_start and q<b.view_end-1e-8
+      return not (b.repeating or b.looped and not b.single) or q>=b.view_start and q<b.view_end-1e-8
     end
     ImGui.InvisibleButton(ctx,'Piano roll',w,h,ImGui.ButtonFlags_MouseButtonLeft|ImGui.ButtonFlags_MouseButtonRight|ImGui.ButtonFlags_MouseButtonMiddle)
     local hovered=ImGui.IsItemHovered(ctx)
@@ -489,6 +517,14 @@ function E.run(r,initial_item,dir)
     local ctrl,shift,alt=mods()
     local in_grid=inside(mx,my,A.gx,A.gy,x+w,A.gy+A.gh)
     local in_vel=inside(mx,my,A.gx,A.vy,x+w,A.bottom)
+    -- The edge a pointer grabs. The zones shrink with the note so the middle
+    -- of a short note still moves it.
+    local function grabbed_edge(n)
+      local a,z=edges(n); local room=(tx(z)-tx(a))/4
+      if math.abs(mx-tx(z))<math.min(7,room) then return 'right',a,z end
+      if math.abs(mx-tx(a))<math.min(5,room) then return 'left',a,z end
+      return nil,a,z
+    end
     local layout=rendering:update(S.notes,B.ghosts,B.clips,B.notes,B.active)
     local first_row=math.floor(S.row)+1
     local last_row=math.min(#S.rows,math.ceil(S.row+A.gh/S.rowh)+1)
@@ -680,19 +716,18 @@ function E.run(r,initial_item,dir)
           S.span=M.clamp(S.span*1.2^(-wheel),0.25,4096); S.start=math.max(0,anchor-fraction*S.span)
         elseif alt then
           local anchor=S.row+(my-A.gy)/S.rowh
-          S.rowh=M.clamp(S.rowh+wheel*2,10,42); S.row=anchor-(my-A.gy)/S.rowh
+          S.rowh=M.clamp(S.rowh+wheel*2,10,42); S.userRowh=S.rowh; S.row=anchor-(my-A.gy)/S.rowh
         elseif shift then S.start=math.max(0,S.start-wheel*S.span/12)
         else S.row=S.row-wheel*3 end
       end
       if horizontal~=0 then S.start=math.max(0,S.start-horizontal*S.span/12) end
       if in_grid and hit then
-        local a,z=edges(S.notes[hit])
-        if math.abs(mx-tx(z))<7 or math.abs(mx-tx(a))<5 then ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_ResizeEW) end
+        if grabbed_edge(S.notes[hit]) then ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_ResizeEW) end
       elseif S.draw and in_grid then ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_Hand) end
       if ImGui.IsMouseClicked(ctx,1) then
         if in_grid then
           local before=M.copy(S.notes); if not shift then deselect() end
-          S.drag={kind='select',mx=mx,my=my,q=tq(mx),p=pitch(my),before=before,add=shift,right=true,candidates=candidates}
+          S.drag={kind='select',mx=mx,my=my,q=tq(mx),p=pitch(my),before=before,add=shift,right=true,candidates=candidates,hit=hit}
         else ImGui.OpenPopup(ctx,'note_menu') end
       end
       if ImGui.IsMouseClicked(ctx,2) then S.drag={kind='pan',mx=mx,my=my,start=S.start,row=S.row} end
@@ -708,8 +743,9 @@ function E.run(r,initial_item,dir)
         elseif inside(mx,my,A.gx,A.ry,x+w,A.gy) then
           S.cursor=S.snap and M.snap(q,grid()) or q
           r.SetEditCurPos2(B.project,r.TimeMap2_QNToTime(B.project,B.origin+S.cursor),true,false)
-          S.drag={kind=shift and 'time' or 'ruler',mx=mx,my=my,start=S.start,span=S.span,q=q,before=M.copy(S.notes)}
-          if ImGui.IsMouseDoubleClicked(ctx,0) then fit(selected_count()>0,A.gw,A.gh); S.drag=nil end
+          if shift then scrub(S.cursor); S.drag={kind='scrub',last=S.cursor}
+          else S.drag={kind='ruler',mx=mx,my=my,start=S.start,span=S.span,q=q,before=M.copy(S.notes)} end
+          if ImGui.IsMouseDoubleClicked(ctx,0) then fit(selected_count()>0,false,true); S.drag=nil end
         elseif inside(mx,my,x,A.vy-20,x+w,A.vy) then
           S.drag={kind='lane',my=my,lane=S.lane}
         elseif in_vel then
@@ -753,16 +789,12 @@ function E.run(r,initial_item,dir)
               -- Grab the drawn edge. A note running past the pass end is drawn
               -- clipped there; its hidden overhang is trimmed so the edge
               -- follows the mouse from where the user grabbed it.
-              local a,z=edges(n)
-              local kind=math.abs(mx-tx(z))<7 and 'right' or math.abs(mx-tx(a))<5 and 'left' or alt and 'velocity' or 'move'
+              local edge,a,z=grabbed_edge(n)
+              local kind=edge or alt and 'velocity' or 'move'
               local before=M.copy(S.notes)
-              if ctrl and kind=='move' then
-                rendering:invalidate()
-                for _,c in ipairs(M.copy(M.selected(S.notes))) do c.id=nil; S.notes[#S.notes+1]=c end
-                for i=1,#before do S.notes[i].selected=false end
-              end
-              S.drag={kind=kind,mx=mx,my=my,q=q,p=p,before=before,base=M.copy(S.notes),index=hit,anchor=n.s,anchorEnd=n.e,changed=ctrl and kind=='move',
-                shown=kind=='left' and a or kind=='right' and z or nil}
+              -- Ctrl + drag copies; the copies appear once the mouse moves.
+              S.drag={kind=kind,mx=mx,my=my,q=q,p=p,before=before,base=M.copy(S.notes),index=hit,anchor=n.s,anchorEnd=n.e,changed=false,
+                copy=ctrl and kind=='move',shown=kind=='left' and a or kind=='right' and z or nil}
             end
           else
             local before=M.copy(S.notes)
@@ -783,10 +815,9 @@ function E.run(r,initial_item,dir)
           S.span=M.clamp(d.span*1.01^(my-d.my),0.25,4096)
           S.start=math.max(0,d.q-(d.mx-A.gx)/A.gw*S.span-(mx-d.mx)/A.gw*S.span)
         end
-      elseif d.kind=='time' then
-        local a,b=math.max(0,math.min(d.q,tq(mx))),math.max(d.q,tq(mx))
-        S.range={S.snap and M.floor(a,grid()) or a,S.snap and math.ceil(b/grid())*grid() or b}
-        for _,n in ipairs(S.notes) do n.selected=n.s<S.range[2] and n.e>S.range[1] end
+      elseif d.kind=='scrub' then
+        local q=math.max(0,tq(mx)); q=S.snap and M.snap(q,grid()) or q
+        if q~=d.last then scrub(q); d.last=q end
       elseif d.kind=='select' then
         local q1,q2=math.min(d.q,tq(mx)),math.max(d.q,tq(mx))
         local y1,y2=math.min(d.my,my),math.max(d.my,my)
@@ -821,6 +852,12 @@ function E.run(r,initial_item,dir)
       elseif (d.kind=='move' or d.kind=='left' or d.kind=='right' or d.kind=='velocity') and ImGui.IsMouseDragging(ctx,0,3)
         and (mx~=d.lastX or my~=d.lastY or alt~=d.lastAlt) then
         d.lastX,d.lastY,d.lastAlt=mx,my,alt
+        if d.copy and not d.copied then
+          rendering:invalidate()
+          for _,c in ipairs(M.copy(M.selected(S.notes))) do c.id=nil; S.notes[#S.notes+1]=c end
+          for i=1,#d.before do S.notes[i].selected=false end
+          d.base=M.copy(S.notes); d.copied=true; d.changed=true
+        end
         local delta=(mx-d.mx)/A.gw*S.span
         local dp,dv=0,0
         if d.kind=='move' then
@@ -861,7 +898,16 @@ function E.run(r,initial_item,dir)
           S.notes=d.before
           if d.candidates and #d.candidates>1 then
             S.pickCandidates=d.candidates; S.pickAdd=d.add; ImGui.OpenPopup(ctx,'overlap_picker')
-          else ImGui.OpenPopup(ctx,'note_menu') end
+          else
+            -- The menu acts on the note under the pointer; a note already in
+            -- the selection keeps the whole selection.
+            local n=d.hit and S.notes[d.hit]
+            if n and not n.selected then
+              if not d.add then deselect() end
+              n.selected=true; B:set_active(n.take_index); S.velocity=n.vel; S.channel=n.channel; S.range=nil
+            end
+            ImGui.OpenPopup(ctx,'note_menu')
+          end
         end
         if d.changed then commit(S.notes,({draw='Draw notes',add='Add / delete note',move='Move notes',left='Change note start',right='Change note length',velocity='Change velocity',velocity_draw='Draw velocity'})[d.kind] or 'Edit notes') end
       end
@@ -889,7 +935,7 @@ function E.run(r,initial_item,dir)
       if ImGui.MenuItem(ctx,'Delete','Delete') then delete_selected() end
       ImGui.Separator(ctx)
       if ImGui.MenuItem(ctx,'Loop selection','Ctrl+L') then loop_selection() end
-      if ImGui.MenuItem(ctx,'Show all notes','X') then fit(false) end
+      if ImGui.MenuItem(ctx,'Show all notes','X') then fit(false,false,true) end
       ImGui.EndPopup(ctx)
     end
   end
@@ -900,7 +946,7 @@ function E.run(r,initial_item,dir)
     if visible then
       ImGui.TextWrapped(ctx,'Double-click an empty cell to add a note; double-click a note to delete it. B toggles drawing. Drag a note or its left or right edge, or drag a rectangle to select.')
       ImGui.Separator(ctx)
-      ImGui.Text(ctx,'Ctrl+A / Shift+click   Select\nCtrl+C / X / V         Copy / cut / paste\nCtrl+D                 Duplicate time including silence\nShift+drag on ruler    Select a time range\nCtrl+Z / Shift+Ctrl+Z  Undo / redo in REAPER\nCtrl+1 / 2 / 3 / 4     Grid: finer / coarser / triplets / snap\nArrows                 Move notes\nShift+Up / Down        Transpose by an octave\nShift+Left / Right     Change length\nAlt+drag               Velocity (middle of a note)\nCtrl+drag              Copy notes\nF / Z / X / 0          Fold / zoom / all clips / mute\nSpace / Ctrl+L         Transport / loop selection\nMiddle button          Scroll the piano roll')
+      ImGui.Text(ctx,'Ctrl+A / Shift+click   Select\nCtrl+C / X / V         Copy / cut / paste\nCtrl+D                 Duplicate time including silence\nShift+click on ruler   Play from there\nCtrl+Z / Shift+Ctrl+Z  Undo / redo in REAPER\nCtrl+1 / 2 / 3 / 4     Grid: finer / coarser / triplets / snap\nArrows                 Move notes\nShift+Up / Down        Transpose by an octave\nShift+Left / Right     Change length\nAlt+drag               Velocity (middle of a note)\nCtrl+drag              Copy notes\nF / Z / X / 0          Fold / zoom / all clips / mute\nSpace / Ctrl+L         Transport / loop selection\nMiddle button          Scroll the piano roll')
       ImGui.Separator(ctx)
       ImGui.TextWrapped(ctx,'Select clips on several tracks in REAPER to edit them together; clicking the track list picks where new notes go. Darker notes = lower velocity. Escape cancels a gesture. One gesture = one Undo across all tracks. The note clipboard works inside this window; pasting goes to the active clip.')
       ImGui.End(ctx)
@@ -995,7 +1041,7 @@ function E.run(r,initial_item,dir)
     stop_preview()
     if r.GetExtState('FluentMIDIEditor','instance')==token then
       r.DeleteExtState('FluentMIDIEditor','heartbeat',false); r.DeleteExtState('FluentMIDIEditor','instance',false)
-      for _,k in ipairs(saved) do r.SetExtState('FluentMIDIEditor',k,tostring(S[k]),true) end
+      for _,k in ipairs(saved) do r.SetExtState('FluentMIDIEditor',k,tostring(k=='rowh' and S.userRowh or S[k]),true) end
     end
   end)
   mod_ui=dofile(dir..'modulation_ui.lua').new(r,ImGui,ctx,M,modulation,B,S,dir,function()
