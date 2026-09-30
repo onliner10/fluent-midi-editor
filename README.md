@@ -9,7 +9,8 @@ call against response. No setup, no custom actions to wire up first.
 ![Editing a lead and a bass clip together in Fluent MIDI Editor](docs/demo.gif)
 
 > **Beta.** It is tested on one setup and has automated tests, but it has not met
-> your projects yet. Please [report what breaks](https://github.com/onliner10/fluent-midi-editor/issues).
+> your projects yet. Please [report what breaks](https://github.com/onliner10/fluent-midi-editor/issues),
+> or come say hi on [Discord](https://discord.gg/F6TJ6SDHcV).
 
 ## What it does
 
@@ -49,6 +50,13 @@ If you want double-click to open this editor instead, run
 **Fluent MIDI Editor - Set as default editor**; **Restore default editor** undoes it.
 
 The full [user guide](docs/guide.md) covers every gesture and shortcut.
+
+## Community
+
+Bug reports, ideas and early dev builds live on the [Discord](https://discord.gg/F6TJ6SDHcV).
+Bugs can also go to [GitHub issues](https://github.com/onliner10/fluent-midi-editor/issues).
+To try dev builds, enable pre-releases for Fluent MIDI Editor in ReaPack.
+The editor links to both from **Options**.
 
 ## Development
 
