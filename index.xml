@@ -5,25 +5,25 @@
       <metadata>
         <link rel="website">https://github.com/onliner10/fluent-midi-editor</link>
       </metadata>
-      <version name="0.9.1" author="onliner10" time="2026-09-29T13:11:18Z">
+      <version name="0.10.0" author="onliner10" time="2026-09-30T10:24:12Z">
         <changelog><![CDATA[See https://github.com/onliner10/fluent-midi-editor/releases]]></changelog>
-        <source main="main">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/Fluent%20MIDI%20Editor%20-%20Open.lua</source>
-        <source main="main" file="Fluent MIDI Editor - Set as default editor.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/Fluent%20MIDI%20Editor%20-%20Set%20as%20default%20editor.lua</source>
-        <source main="main" file="Fluent MIDI Editor - Restore default editor.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/Fluent%20MIDI%20Editor%20-%20Restore%20default%20editor.lua</source>
-        <source file="lib/backend.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/lib/backend.lua</source>
-        <source file="lib/editor.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/lib/editor.lua</source>
-        <source file="lib/integration.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/lib/integration.lua</source>
-        <source file="lib/length.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/lib/length.lua</source>
-        <source file="lib/model.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/lib/model.lua</source>
-        <source file="lib/modulation.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/lib/modulation.lua</source>
-        <source file="lib/modulation_fx.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/lib/modulation_fx.lua</source>
-        <source file="lib/modulation_ui.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/lib/modulation_ui.lua</source>
-        <source file="lib/note_layout.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/lib/note_layout.lua</source>
-        <source file="lib/phrase.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/lib/phrase.lua</source>
-        <source file="lib/preview.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/lib/preview.lua</source>
-        <source file="lib/render_cache.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/lib/render_cache.lua</source>
-        <source file="lib/repetition.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/lib/repetition.lua</source>
-        <source file="lib/session.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.9.1/MIDI%20Editor/lib/session.lua</source>
+        <source main="main">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/Fluent%20MIDI%20Editor%20-%20Open.lua</source>
+        <source main="main" file="Fluent MIDI Editor - Set as default editor.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/Fluent%20MIDI%20Editor%20-%20Set%20as%20default%20editor.lua</source>
+        <source main="main" file="Fluent MIDI Editor - Restore default editor.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/Fluent%20MIDI%20Editor%20-%20Restore%20default%20editor.lua</source>
+        <source file="lib/backend.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/lib/backend.lua</source>
+        <source file="lib/editor.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/lib/editor.lua</source>
+        <source file="lib/integration.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/lib/integration.lua</source>
+        <source file="lib/length.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/lib/length.lua</source>
+        <source file="lib/model.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/lib/model.lua</source>
+        <source file="lib/modulation.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/lib/modulation.lua</source>
+        <source file="lib/modulation_fx.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/lib/modulation_fx.lua</source>
+        <source file="lib/modulation_ui.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/lib/modulation_ui.lua</source>
+        <source file="lib/note_layout.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/lib/note_layout.lua</source>
+        <source file="lib/phrase.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/lib/phrase.lua</source>
+        <source file="lib/preview.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/lib/preview.lua</source>
+        <source file="lib/render_cache.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/lib/render_cache.lua</source>
+        <source file="lib/repetition.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/lib/repetition.lua</source>
+        <source file="lib/session.lua">https://raw.githubusercontent.com/onliner10/fluent-midi-editor/v0.10.0/MIDI%20Editor/lib/session.lua</source>
       </version>
     </reapack>
   </category>
