@@ -19,7 +19,9 @@ function A.meta(msg)
   if not ch or ch%1~=0 or ch<0 or ch>15 or not cc or cc%1~=0 or cc<0 or cc>119 then return end
   return fields,A.key(ch,cc),ch,cc
 end
+-- CCs a note owns (MPE timbre) move with that note, not with a lane.
 function A.cc_key(event)
+  if event.owner then return end
   local a,b=event.msg:byte(1,2)
   if #event.msg==3 and a&0xF0==0xB0 and b<120 then return A.key(a&15,b),a&15,b end
 end

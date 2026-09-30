@@ -171,6 +171,29 @@ replaces their interpolation with segments between points. When the editor detec
 a mismatch between the stored points and CC changed from outside, it also
 offers the import. Pitch bend, MPE and 14-bit CC have no dedicated editor.
 
+## What travels with a note
+
+Moving, copying (Ctrl+D, Ctrl+C / Ctrl+V, Ctrl+drag), transposing or deleting a
+note takes everything that belongs to it along: velocity, release velocity,
+channel, polyphonic aftertouch on its key and REAPER notation for it
+(articulations, custom note names).
+
+**MPE recordings** (Seaboard, LinnStrument, Osmose and the like) give each
+note its own channel. The editor recognises such a clip when several channels
+each play one note at a time and carry pitch bend, channel pressure or CC74.
+Each note then owns that expression, including the values sent just before it
+starts and its release tail:
+
+- a moved or copied note keeps its slide, pressure and timbre;
+- a copy or a newly drawn note that would share a channel with a sounding note
+  gets a free channel;
+- a note always starts with the bend, pressure and timbre it started with before
+  the edit, even if a neighbour on its channel moved away or was deleted.
+
+Channels that play chords (a zone's master channel, or an ordinary non-MPE
+clip) are left as they were: their pitch bend and CC stay at their time.
+Expression is preserved, not drawn: there is no per-note bend editor yet.
+
 ## Cheat sheet
 
 | Gesture / shortcut | Action |
