@@ -31,6 +31,11 @@ class FluentMidiEditor(unittest.TestCase):
             (ROOT / 'tests/render_spec.lua').as_posix(), ROOT.as_posix())
         self.assertGreater(count, 24000)
 
+    def test_note_owned_midi(self):
+        count = self.lua.eval('function(path, root) return assert(loadfile(path))(root) end')(
+            (ROOT / 'tests/mpe_spec.lua').as_posix(), ROOT.as_posix())
+        self.assertGreaterEqual(count, 50)
+
     def test_clip_modulation(self):
         count = self.lua.eval('function(path, root) return assert(loadfile(path))(root) end')(
             (ROOT / 'tests/modulation_spec.lua').as_posix(), ROOT.as_posix())
