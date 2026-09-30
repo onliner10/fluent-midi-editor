@@ -24,14 +24,19 @@ It aims to make everyday editing pleasant, not to replace every tool REAPER has.
 
 ## Install
 
-1. Install [ReaPack](https://reapack.com) if you do not have it.
-2. In REAPER: **Extensions → ReaPack → Import repositories…**, paste
+**[Step-by-step install guide](docs/install.md)**, with what you should see at each step and fixes for the usual problems.
+
+The short version, in REAPER 7 or newer:
+
+1. Install [ReaPack](https://reapack.com) if you do not have it (**Extensions → ReaPack** should exist).
+2. **Extensions → ReaPack → Import repositories…**, paste
    ```
    https://github.com/onliner10/fluent-midi-editor/raw/main/index.xml
    ```
-3. **Extensions → ReaPack → Browse packages**, search for **Fluent MIDI Editor** and install it.
-   Also install **ReaImGui** (from the default ReaTeam Extensions repository) if you do not have it.
-4. Optional: **SWS** lets you preview notes through the track's instrument.
+3. **Extensions → ReaPack → Browse packages…** and install **two** packages: **Fluent MIDI Editor**, and
+   **ReaImGui: ReaScript binding for Dear ImGui** (by cfillion). Click **Apply**.
+4. **Restart REAPER.** ReaImGui is loaded only at startup, and the editor cannot open without it.
+5. Optional: **SWS** lets you preview notes through the track's instrument.
 
 Requires REAPER 7 and ReaImGui 0.10 or later. Windows, macOS and Linux should work;
 so far it has been tested on Windows.
