@@ -155,4 +155,59 @@ function T.note_color(velocity,clip)
   return T.load('model').velocity_color(T.clip_colors[clip or 1],velocity)
 end
 
+-- A session on items, as the editor builds it.
+function T.session(...)
+  local M=T.load('model')
+  local S=T.load('session').new(r,M,T.load('backend'),T.load('repetition'),T.load('phrase'))
+  S:attach({...}); return S,M
+end
+-- Write one modulation lane to the active clip as the modulation panel does,
+-- then read the clip's lanes back.
+function T.write_lane(S,lane)
+  local A=T.load('modulation'); local b=S.clips[S.active]
+  local raw=A.write(b.source,{lane},b.to_ppq,b.source.end_ppq)
+  local ok,message=S:commit(S.notes,'Write lane',nil,{[S.active]={raw=raw}})
+  if not ok then error('writing the lane failed: '..tostring(message),2) end
+  return T.lanes(S)
+end
+function T.lanes(S)
+  local A=T.load('modulation'); local b=S.clips[S.active]
+  local lanes,bykey=A.read(b.source,b.from_ppq)
+  for _,l in ipairs(lanes) do if l.managed then l.stale=not A.matches_playback(l,b.source,b.from_ppq,b.to_ppq) end end
+  return lanes,bykey
+end
+-- CC events of a take as {ppq,channel,cc,value}.
+function T.ccs(take)
+  local out={}; local _,_,count=r.MIDI_CountEvts(take)
+  for i=0,count-1 do
+    local _,_,_,pos,status,channel,cc,value=r.MIDI_GetCC(take,i)
+    if status==0xB0 then out[#out+1]={pos,channel,cc,value} end
+  end
+  return out
+end
+
+-- editor.lua copy() and paste() for CC: copy [a,z) of one clip, paste it into
+-- another at a beat. Returns the paste's event edit for S:commit.
+function T.copy_cc(b,a,z)
+  local A=T.load('modulation')
+  local start,finish=b.to_ppq(a-b.offset_in_view),b.to_ppq(z-b.offset_in_view)
+  local fragment=A.copy_range(b.source,start,finish)
+  fragment=A.retime(fragment,function(pos) return b.from_ppq(pos+start)+b.offset_in_view-a end)
+  fragment.length=z-a; return fragment
+end
+function T.paste_cc(b,fragment,cursor)
+  local A=T.load('modulation')
+  local dest=b.to_ppq(cursor-b.offset_in_view)
+  local events=A.retime(fragment,function(pos) return b.to_ppq(pos+cursor-b.offset_in_view)-dest end)
+  events.length=b.to_ppq(cursor+fragment.length-b.offset_in_view)-dest
+  local ending=cursor+fragment.length-b.offset_in_view
+  return {raw=A.insert_range(b.source,events,dest,math.max(b.source.end_ppq,b.to_ppq(ending))),ending=ending}
+end
+-- The value a CC holds at a beat of a take, from its events.
+function T.cc_at(take,channel,cc,qn)
+  local ppq=r.MIDI_GetPPQPosFromProjQN(take,qn); local value
+  for _,e in ipairs(T.ccs(take)) do if e[2]==channel and e[3]==cc and e[1]<=ppq then value=e[4] end end
+  return value
+end
+
 return T
