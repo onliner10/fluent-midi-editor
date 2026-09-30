@@ -34,7 +34,10 @@ if r.time_precise()-stamp<1 then
   return
 end
 if not r.ImGui_GetBuiltinPath then
-  r.MB('Install ReaImGui from Extensions > ReaPack > Browse packages, then run the editor again.',
+  r.MB('The editor needs the ReaImGui extension.\n\n'..
+    '1. Extensions > ReaPack > Browse packages, search "ReaImGui", right-click the one by cfillion, Install, then Apply.\n'..
+    '2. Restart REAPER. This is required, even right after ReaPack says it installed it.\n\n'..
+    'Step by step: github.com/onliner10/fluent-midi-editor/blob/main/docs/install.md',
     'Fluent MIDI Editor needs ReaImGui',0)
   return
 end
