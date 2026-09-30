@@ -1,12 +1,14 @@
 -- The modulation lane shares the piano roll's QN viewport. Gestures only edit a
 -- local draft; release writes CC and knot metadata together in one native Undo.
 local U={}
-function U.new(r,ImGui,ctx,M,A,B,S,dir,on_write)
+-- ui: the editor's design system (theme.lua), shared so one layout audit sees
+-- every control in the window.
+function U.new(r,ImGui,ctx,M,A,B,S,dir,on_write,ui)
   local F=dofile(dir..'modulation_fx.lua').new(r,A,M)
   local MIN_HEIGHT=160
   local self={enabled=r.GetExtState('FluentMIDIEditor','modOpen')~='0',lanes={},selected=1,snap=false,
     height=math.max(MIN_HEIGHT,tonumber(r.GetExtState('FluentMIDIEditor','modHeight')) or 275),max_height=MIN_HEIGHT,cc=1,channel=1}
-  local C={bg=0x24272BFF,panel=0x2C3035FF,line=0x41464DFF,text=0xE4E8ECFF,muted=0xA5ADB7FF,accent=0xFFAD59FF}
+  local C=ui.C
   local function lane() return self.draft or self.lanes[self.selected] end
   function self:busy() return self.drag~=nil or self.pending~=nil or self.numeric~=nil end
   function self:reset(keep_capture)
@@ -79,10 +81,14 @@ function U.new(r,ImGui,ctx,M,A,B,S,dir,on_write)
   end
   -- Collapsed and empty panels shrink to their header, so a clip without
   -- modulation does not take space from the piano roll.
+  -- The panel folded to its title row.
+  function self:header_height()
+    local _,pad=ImGui.GetStyleVar(ctx,ImGui.StyleVar_WindowPadding)
+    return ImGui.GetFrameHeight(ctx)+2*pad+2
+  end
   function self:layout_height(available)
     self:refresh()
-    local _,pad=ImGui.GetStyleVar(ctx,ImGui.StyleVar_WindowPadding)
-    local head=ImGui.GetFrameHeight(ctx)+2*pad+2
+    local head=self:header_height()
     self.max_height=math.max(MIN_HEIGHT,math.floor(available*.7))
     if not self.enabled then return head end
     if #self.lanes==0 then return head+ImGui.GetTextLineHeightWithSpacing(ctx)+4 end
@@ -100,14 +106,7 @@ function U.new(r,ImGui,ctx,M,A,B,S,dir,on_write)
     if ctrl and key('A') and lane() then for _,p in ipairs(lane().points) do p.selected=true end; return true end
     return false
   end
-  local function tip(text) if ImGui.IsItemHovered(ctx,ImGui.HoveredFlags_DelayNormal) then ImGui.SetTooltip(ctx,text) end end
-  local function button(text,active)
-    if active then ImGui.PushStyleColor(ctx,ImGui.Col_Button,0xA36B37FF) end
-    local clicked=ImGui.Button(ctx,text)
-    if active then ImGui.PopStyleColor(ctx) end
-    return clicked
-  end
-  local function text_w(text) local w=ImGui.CalcTextSize(ctx,text); return w end
+  local function text_w(text) return ui:text_width(text) end
   local function plural(n)
     return n==1 and 'lane' or 'lanes'
   end
@@ -123,9 +122,8 @@ function U.new(r,ImGui,ctx,M,A,B,S,dir,on_write)
   end
   -- The gap above the panel is its resize handle: drag to resize, double click to collapse.
   local function splitter(width)
-    local x,y=ImGui.GetCursorScreenPos(ctx); local _,gap=ImGui.GetStyleVar(ctx,ImGui.StyleVar_ItemSpacing)
-    ImGui.SetCursorScreenPos(ctx,x,y-gap)
-    ImGui.InvisibleButton(ctx,'##mod_splitter',width,gap)
+    local x,y=ImGui.GetCursorScreenPos(ctx); local gap=ui.space.sm
+    ui:handle_above('##mod_splitter',width,gap)
     local mx,my=ImGui.GetMousePos(ctx); local active=ImGui.IsItemActive(ctx)
     local hovered=ImGui.IsItemHovered(ctx) and mx>=x and mx<=x+width and my>=y-gap and my<=y
     if hovered or active then ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_ResizeNS) end
@@ -135,53 +133,43 @@ function U.new(r,ImGui,ctx,M,A,B,S,dir,on_write)
     elseif not active and self.resize then self.resize=nil; r.SetExtState('FluentMIDIEditor','modHeight',tostring(math.floor(self.height)),true) end
     local mid,cx=y-gap/2,x+width/2
     ImGui.DrawList_AddLine(ImGui.GetWindowDrawList(ctx),cx-18,mid,cx+18,mid,(hovered or active) and C.accent or C.line,2)
-    tip('Drag to resize. Double-click to collapse.')
-    ImGui.SetCursorScreenPos(ctx,x,y)
+    ui:tip('Drag to resize. Double-click to collapse.')
   end
-  function self:draw(width,height)
-    self:poll(); local b=B.clips[B.active]; if not b then return end
+  local function content(b)
     local expanded=self.enabled and #self.lanes>0
-    if expanded then splitter(width) end
-    if not ImGui.BeginChild(ctx,'Modulation lane',width,height,ImGui.ChildFlags_Borders) then ImGui.EndChild(ctx); return end
     self.focus=ImGui.IsWindowFocused(ctx,ImGui.FocusedFlags_ChildWindows)
-    local x0=ImGui.GetCursorPosX(ctx); local available=ImGui.GetContentRegionAvail(ctx)
-    local fx=ImGui.GetStyleVar(ctx,ImGui.StyleVar_FramePadding); local sx=ImGui.GetStyleVar(ctx,ImGui.StyleVar_ItemSpacing)
-    local vst_w=math.max(text_w('+ VST parameter'),text_w('Move a knob...'))
-    local actions_w=text_w('+ CC')+vst_w+4*fx+sx
+    local capture=self.armed and 'Move a knob...' or '+ VST parameter'
+    local actions_w=ui:width('+ CC')+math.max(ui:width('+ VST parameter'),ui:width('Move a knob...'))+ui.space.sm
     local l=lane()
-    if ImGui.ArrowButton(ctx,'##mod_toggle',self.enabled and ImGui.Dir_Down or ImGui.Dir_Right) then self:set_open(not self.enabled) end
-    tip(self.enabled and 'Collapse modulation' or 'Expand modulation')
-    ImGui.SameLine(ctx); ImGui.AlignTextToFramePadding(ctx); ImGui.Text(ctx,'Modulation')
+    if ui:arrow('##mod_toggle',self.enabled,self.enabled and 'Collapse modulation' or 'Expand modulation') then self:set_open(not self.enabled) end
+    ui:same_line(); ui:label('Modulation',true)
     if ImGui.IsItemHovered(ctx) then ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_Hand) end
     if ImGui.IsItemClicked(ctx) then self:set_open(not self.enabled) end
-    ImGui.SameLine(ctx)
-    local space=x0+available-actions_w-sx-ImGui.GetCursorPosX(ctx)
+    ui:same_line()
     if expanded then
-      ImGui.SetNextItemWidth(ctx,math.max(100,space))
-      if ImGui.BeginCombo(ctx,'##mod_target',l and l.label or '') then
+      ui:combo('##mod_target',l and l.label or '',{rest=actions_w+ui.space.sm},function()
         for i,v in ipairs(self.lanes) do
-          if ImGui.Selectable(ctx,v.label..' · CC '..v.cc..' / ch. '..(v.channel+1)..'##mod'..i,i==self.selected) then self:finish_pending(); self.selected=i; self.draft=nil end
+          if ui:option(v.label..' · CC '..v.cc..' / ch. '..(v.channel+1)..'##mod'..i,i==self.selected) then self:finish_pending(); self.selected=i; self.draft=nil end
         end
-        ImGui.EndCombo(ctx)
-      end
+      end,'Modulation lanes in this clip')
     elseif not self.enabled then
-      ImGui.TextColored(ctx,C.muted,summary(space))
+      local room=ImGui.GetContentRegionAvail(ctx)
+      ui:label(summary(room-actions_w-ui.space.sm))
     end
-    ImGui.SameLine(ctx,x0+available-actions_w)
-    if button('+ CC') then self:finish_pending(); self:set_open(true); ImGui.OpenPopup(ctx,'Add CC') end
-    ImGui.SameLine(ctx)
-    if button(self.armed and 'Move a knob...' or '+ VST parameter',self.armed) then
+    ui:right_align(actions_w)
+    if ui:button('+ CC','Add a MIDI CC lane. Modulation is stored in the clip, and copied and repeated with it.') then self:finish_pending(); self:set_open(true); ImGui.OpenPopup(ctx,'Add CC') end
+    ui:same_line()
+    if ui:toggle(capture,self.armed,'Capture a parameter on the active track. Its curve is stored as CC in the clip.') then
       self:finish_pending(); self:set_open(true)
       if self.armed then self.armed=false else self.armed=F:signature(F:touched(b)) end
       S.status=self.armed and 'Move a VST parameter on track '..b.track_name..'. Escape cancels.' or 'Capture cancelled'
     end
-    tip('Capture a parameter on the active track. Its curve is stored as CC in the clip.')
     if ImGui.BeginPopup(ctx,'Add CC') then
-      ImGui.SetNextItemWidth(ctx,140); local changed; changed,self.cc=ImGui.InputInt(ctx,'CC (0-119)',self.cc)
+      local changed; changed,self.cc=ui:input_int('CC (0-119)',self.cc,'wide')
       self.cc=M.clamp(self.cc,0,119)
-      ImGui.SetNextItemWidth(ctx,140); changed,self.channel=ImGui.InputInt(ctx,'Channel (1-16)',self.channel)
+      changed,self.channel=ui:input_int('Channel (1-16)',self.channel,'wide')
       self.channel=M.clamp(self.channel,1,16)
-      if button('Add / show') then
+      if ui:primary('Add / show') then
         local found; for i,v in ipairs(self.lanes) do if v.channel==self.channel-1 and v.cc==self.cc then self.selected=i; found=true end end
         if not found then self:write(A.new_lane(self.channel-1,self.cc,b.edit_source_start,b.edit_source_end,.5),'Add CC lane to clip') end
         ImGui.CloseCurrentPopup(ctx)
@@ -189,42 +177,42 @@ function U.new(r,ImGui,ctx,M,A,B,S,dir,on_write)
       ImGui.EndPopup(ctx)
     end
     l=lane()
-    if not self.enabled then ImGui.EndChild(ctx); return end
+    if not self.enabled then return end
     if not l then
-      ImGui.TextColored(ctx,C.muted,'Add a CC or capture a VST parameter. Modulation is copied and repeated with the clip.')
-      ImGui.EndChild(ctx); return
+      ui:muted('Add a CC or capture a VST parameter.')
+      return
     end
     if l.stale or not l.managed and l.complex_native then
-      ImGui.TextColored(ctx,C.accent,l.stale and 'CC changed outside Fluent MIDI Editor.' or 'CC uses native curve shapes.')
-      ImGui.SameLine(ctx)
-      if button('Import current CC as points') then
+      ui:label(l.stale and 'CC changed outside Fluent MIDI Editor.' or 'CC uses native curve shapes.')
+      ui:same_line()
+      if ui:button('Import current CC as points','Keeps the CC values. Native curves are replaced by segments between points.') then
         local draft=M.copy(l); draft.points=M.copy(l.native); draft.managed=true; draft.stale=nil; draft.complex_native=nil
         self:write(draft,'Import current CC into modulation')
       end
-      tip('Keeps the CC values. Native curves are replaced by segments between points.')
     else
       -- The mode is part of the lane stored in the clip.
       local function set_mode(mode)
         if l.mode==mode or not editable(l) then return end
         local draft=prepare(); draft.mode=mode; self:write(draft,mode=='steps' and 'Draw modulation as steps' or 'Draw modulation as a curve')
       end
-      if button('Curve',l.mode~='steps') then set_mode('curve') end
-      ImGui.SameLine(ctx); if button('Steps',l.mode=='steps') then set_mode('steps') end
-      ImGui.SameLine(ctx); if button('Snap',self.snap) then self.snap=not self.snap end
-      tip('Shift temporarily enables snap. Same grid as the notes.')
-      ImGui.SameLine(ctx); if button('Undo') then self:finish_pending(); r.Undo_DoUndo2(B.project); B:read(); self:reset(); on_write() end
-      ImGui.SameLine(ctx); if button('Redo') then r.Undo_DoRedo2(B.project); B:read(); self:reset(); on_write() end
-      ImGui.SameLine(ctx); ImGui.TextColored(ctx,C.muted,'CC '..l.cc..' / ch. '..(l.channel+1)..' · '..b.track_name)
-      if not F:linked(l,b) then ImGui.TextColored(ctx,C.accent,'Not mapped to this VST on the track. The CC stays in the clip.') end
+      if ui:toggle('Curve',l.mode~='steps','Draw a smooth curve between points') then set_mode('curve') end
+      ui:same_line(); if ui:toggle('Steps',l.mode=='steps','Paint one value per grid step') then set_mode('steps') end
+      ui:same_line(); if ui:toggle('Snap',self.snap,'Snap points to the grid. Shift snaps while dragging.') then self.snap=not self.snap end
+      ui:same_line(); if ui:button('Undo','Undo in REAPER') then self:finish_pending(); r.Undo_DoUndo2(B.project); B:read(); self:reset(); on_write() end
+      ui:same_line(); if ui:button('Redo','Redo in REAPER') then r.Undo_DoRedo2(B.project); B:read(); self:reset(); on_write() end
+      ui:same_line(); ui:label('CC '..l.cc..' / ch. '..(l.channel+1)..' · '..b.track_name)
+      if not F:linked(l,b) then ui:warning('Not mapped to this VST on the track. The CC stays in the clip.') end
     end
     local x,y=ImGui.GetCursorScreenPos(ctx); local w,remain=ImGui.GetContentRegionAvail(ctx)
-    local h=math.max(65,remain-31); local gx=S.timeline_x or x+44; local gw=S.timeline_w or math.max(40,w-54); local gy=y+9; local gh=h-25
+    -- The graph takes what the footer row (value slider, point count) leaves.
+    local h=math.max(ui.size.control,remain-ui.size.control-ui.space.sm); local gx=S.timeline_x or x+44; local gw=S.timeline_w or math.max(40,w-54); local gy=y+9; local gh=h-25
     local dl=ImGui.GetWindowDrawList(ctx)
+    ui:anchor('graph',gx,gy,gx+gw,gy+gh)
     local tx=function(q) return gx+(q-S.start)/S.span*gw end
     local tq=function(px) return S.start+(px-gx)/gw*S.span end
     local ty=function(v) return gy+(1-v)*gh end
     local value=function(py) return M.clamp(1-(py-gy)/gh,0,1) end
-    ImGui.InvisibleButton(ctx,'Modulation graph',w,h,ImGui.ButtonFlags_MouseButtonLeft|ImGui.ButtonFlags_MouseButtonRight)
+    ui:region('Modulation graph',w,h,ImGui.ButtonFlags_MouseButtonLeft|ImGui.ButtonFlags_MouseButtonRight)
     local hovered=ImGui.IsItemHovered(ctx); local mx,my=ImGui.GetMousePos(ctx)
     local ctrl=ImGui.IsKeyDown(ctx,ImGui.Mod_Ctrl); local shift=ImGui.IsKeyDown(ctx,ImGui.Mod_Shift); local alt=ImGui.IsKeyDown(ctx,ImGui.Mod_Alt)
     local step=S.grid*(S.triplet and 2/3 or 1)
@@ -248,7 +236,7 @@ function U.new(r,ImGui,ctx,M,A,B,S,dir,on_write)
     ImGui.DrawList_PushClipRect(dl,gx,gy-5,gx+gw+6,gy+gh+6,true)
     for _,level in ipairs({0,.25,.5,.75,1}) do ImGui.DrawList_AddLine(dl,gx,ty(level),gx+gw,ty(level),C.line) end
     local gridstep=step; while gridstep*gw/S.span<12 do gridstep=gridstep*2 end
-    for t=M.floor(S.start,gridstep),S.start+S.span,gridstep do ImGui.DrawList_AddLine(dl,tx(t),gy,tx(t),gy+gh,0x78838F38) end
+    for t=M.floor(S.start,gridstep),S.start+S.span,gridstep do ImGui.DrawList_AddLine(dl,tx(t),gy,tx(t),gy+gh,C.graph_grid) end
     local function curve(shiftq,a,z,color,ghost)
       local left=math.max(a,S.start); local right=math.min(z,S.start+S.span); if right<=left then return end
       local n=math.max(1,math.ceil((right-left)/S.span*gw/3)); local px,py
@@ -257,7 +245,7 @@ function U.new(r,ImGui,ctx,M,A,B,S,dir,on_write)
       end
     end
     curve(b.offset_in_view,b.view_start,b.view_end,C.accent)
-    if B.show_repeats then for _,cycle in ipairs(b.repeats) do curve(cycle.s-b.edit_source_start,cycle.s,cycle.e,0xFFAD5970,true) end end
+    if B.show_repeats then for _,cycle in ipairs(b.repeats) do curve(cycle.s-b.edit_source_start,cycle.s,cycle.e,C.repeat_curve,true) end end
     for i,p in ipairs(l.points) do if p.t>=b.edit_source_start-1e-8 and p.t<=b.edit_source_end+1e-8 then
       local xx,yy=tx(p.t+b.offset_in_view),ty(p.v)
       if p.selected then ImGui.DrawList_AddCircle(dl,xx,yy,8,C.text,0,1) end
@@ -271,10 +259,11 @@ function U.new(r,ImGui,ctx,M,A,B,S,dir,on_write)
       ImGui.DrawList_AddLine(dl,tx(play),gy,tx(play),gy+gh,C.text,1)
     end
     ImGui.DrawList_PopClipRect(dl)
-    ImGui.DrawList_AddText(dl,x+3,gy-4,C.muted,'127'); ImGui.DrawList_AddText(dl,x+20,gy+gh-10,C.muted,'0')
+    ImGui.DrawList_AddText(dl,x+3,gy-4,C.faint,'127')
+    if gh>=3*ImGui.GetTextLineHeight(ctx) then ImGui.DrawList_AddText(dl,x+20,gy+gh-10,C.faint,'0') end
     if in_graph and not self.drag then
       ImGui.SetMouseCursor(ctx,hit and ImGui.MouseCursor_ResizeAll or segment and ImGui.MouseCursor_ResizeNS or ImGui.MouseCursor_Arrow)
-      tip(not in_phrase and 'Repeat: edit the first pass.' or 'Click: add point | Double-click point: delete | Drag line: bend\nCtrl+click: Soft | Shift: snap | Right-click point: type\nClick point: line/curve | Shift+click point: soften')
+      ui:tip(not in_phrase and 'Repeat: edit the first pass.' or 'Click: add point | Double-click point: delete | Drag line: bend\nCtrl+click: Soft | Shift: snap | Right-click point: type\nClick point: line/curve | Shift+click point: soften')
     end
     if in_graph and editable(l) and in_phrase and not self.drag then
       if ImGui.IsMouseClicked(ctx,1) and hit then
@@ -350,17 +339,20 @@ function U.new(r,ImGui,ctx,M,A,B,S,dir,on_write)
     if l then
       local chosen=selected(l); local p=#chosen==1 and l.points[chosen[1]]
       if p and editable(l) then
-        ImGui.SetNextItemWidth(ctx,135)
-        local changed,new=ImGui.SliderDouble(ctx,'##point_value',p.v,0,1,'Value %.3f')
+        local changed,new,released=ui:slider_double('##point_value',p.v,0,1,'Value %.3f','wide','The selected point\'s value')
         if changed then if not self.numeric then self.numeric=M.copy(l); self.numeric_index=chosen[1] end; self.numeric.points[self.numeric_index].v=new; self.draft=self.numeric end
-        if ImGui.IsItemDeactivatedAfterEdit(ctx) and self.numeric then self:write(self.numeric,'Change modulation value') end
-        ImGui.SameLine(ctx)
-        if button('Delete point') then self:delete_points() end
-        ImGui.SameLine(ctx)
+        if released and self.numeric then self:write(self.numeric,'Change modulation value') end
+        ui:same_line()
+        if ui:button('Delete point','Delete: remove the selected points') then self:delete_points() end
+        ui:same_line()
       end
-      ImGui.TextColored(ctx,C.muted,#l.points..' pts · in MIDI clip')
+      ui:label(#l.points..' pts · in MIDI clip')
     end
-    ImGui.EndChild(ctx)
+  end
+  function self:draw(width,height)
+    self:poll(); local b=B.clips[B.active]; if not b then return end
+    if self.enabled and #self.lanes>0 then splitter(width) end
+    ui:panel('Modulation lane',width,height,function() content(b) end)
   end
   return self
 end

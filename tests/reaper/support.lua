@@ -100,7 +100,7 @@ end
 -- The editor as a fresh instance: the previous one exits on its next defer
 -- cycle, so wait for that before running the Open action again.
 function T.open_steps()
-  return {0.5,function() T.open_editor(); return true end,
+  return {0.5,function() T.audit(); T.open_editor(); return true end,
     function() return T.editor_running() end,1.0}
 end
 
@@ -225,7 +225,33 @@ function T.window()
   T.ok(x,'editor window not found')
   return {tonumber(x),tonumber(y),tonumber(w),tonumber(h)}
 end
--- The ruler above the piano roll: a y inside it, 141 px below the window top.
-function T.ruler_y() return T.window()[2]+141 end
+-- The ruler above the piano roll: a y inside it (needs T.audit()).
+function T.ruler_y() return T.control('ruler').cy end
+
+-- The layout audit (theme.lua): the editor reports each frame what overlaps,
+-- leaves its panel or breaks the control height, and where every control is.
+function T.audit(on) r.SetExtState('FluentMIDIEditor','audit',on==false and '' or '1',false) end
+function T.audit_problems() return r.GetExtState('FluentMIDIEditor','auditProblems') end
+-- Controls and anchors by label: {x1,y1,x2,y2,cx,cy} in screen pixels.
+function T.layout()
+  local out={}
+  for line in (r.GetExtState('FluentMIDIEditor','auditLayout')..'\n'):gmatch('(.-)\n') do
+    local kind,label,x1,y1,x2,y2=line:match('^(.-)\t(.-)\t(%-?%d+)\t(%-?%d+)\t(%-?%d+)\t(%-?%d+)$')
+    if kind then
+      x1,y1,x2,y2=tonumber(x1),tonumber(y1),tonumber(x2),tonumber(y2)
+      out[label]=out[label] or {x1,y1,x2,y2,cx=(x1+x2)//2,cy=(y1+y2)//2,kind=kind}
+    end
+  end
+  return out
+end
+function T.control(label)
+  local c=T.layout()[label]; T.ok(c,'no control "'..label..'" in the editor layout'); return c
+end
+-- Resize the editor window (it must be open).
+function T.resize(w,h)
+  local f=io.popen('DISPLAY=:99 xdotool search --onlyvisible --name "^Fluent MIDI Editor$" 2>/dev/null')
+  local id=f:read('l'); f:close(); T.ok(id,'editor window not found')
+  sh(string.format('xdotool windowsize %s %d %d',id,w,h))
+end
 
 return T

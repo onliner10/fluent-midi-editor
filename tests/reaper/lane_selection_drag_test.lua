@@ -13,7 +13,9 @@ T.select(r.GetTrackMediaItem(r.GetTrack(0,0),0))
 local DRAG=true
 return T.steps(T.concat(T.open_steps(),
   function()
-    local w=T.window(); local px,py=w[1]+715,w[2]+579 -- the middle point
+    -- The middle point (beat 4, value 0.8). The graph shares the piano roll's
+    -- timeline, which shows the 8-beat clip from 0 to 8.5 when it opens.
+    local g=T.control('graph'); local px,py=math.floor(g[1]+4/8.5*(g[3]-g[1])),math.floor(g[2]+0.2*(g[4]-g[2]))
     local steps=T.drag_steps(px-25,py-24,px+25,py+9) -- rectangle around it
     if DRAG then steps=T.concat(steps,T.drag_steps(px,py,px+37,py+10)) end
     return T.concat(steps,{function() T.keys('Delete'); return true end,0.8})

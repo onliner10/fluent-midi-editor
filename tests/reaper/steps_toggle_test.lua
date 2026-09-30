@@ -10,7 +10,7 @@ lane.points={{t=0,v=.2,kind=0,bend=0},{t=4,v=.8,kind=0,bend=0},{t=8,v=.3,kind=0,
 T.write_lane(S,lane)
 T.select(r.GetTrackMediaItem(r.GetTrack(0,0),0))
 return T.steps(T.concat(T.open_steps(),
-  function() local w=T.window(); return T.click_steps(w[1]+338,w[2]+523) end,
+  function() local c=T.control('Steps'); return T.click_steps(c.cx,c.cy) end,
   1.0,
   function()
     T.close_editor()

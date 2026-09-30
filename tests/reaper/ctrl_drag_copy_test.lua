@@ -7,7 +7,7 @@ T.select(r.GetTrackMediaItem(r.GetTrack(0,0),0))
 return T.steps(T.concat(T.open_steps(),
   function()
     local n=T.find(T.note_color(100)); T.ok(n,'note not drawn')
-    local width=n[3]-n[1] -- one beat
+    local width=n[3]-n[1]+2 -- one beat: notes are drawn 1 px inside their edges
     return {function() T.move(n.cx,n.cy); return true end,0.3,
       function() T.keydown('ctrl'); return true end,0.2,
       function() T.down(); return true end,0.3,
