@@ -1,0 +1,32 @@
+# Tags and publishes the version in the Open script's @version when it is new.
+# ReaPack's index.xml points at files under that tag, so the tag must exist
+# before index.xml on main names the version.
+name: Release
+on:
+  push:
+    branches: [main]
+    paths: ['MIDI Editor/Fluent MIDI Editor - Open.lua']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^-- @version //p' "MIDI Editor/Fluent MIDI Editor - Open.lua")
+          tag="v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists"; exit 0
+          fi
+          git tag "$tag" "$GITHUB_SHA"
+          git push origin "$tag"
+          notes="docs/releases/$tag.md"
+          if [ -f "$notes" ]; then set -- --notes-file "$notes"; else set -- --generate-notes; fi
+          gh release create "$tag" --title "Fluent MIDI Editor $version (beta)" "$@"
