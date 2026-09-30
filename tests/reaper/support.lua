@@ -15,6 +15,8 @@ function T.reset()
   for _,k in ipairs({'heartbeat','error','focus','target'}) do r.DeleteExtState('FluentMIDIEditor',k,false) end
   r.SelectAllMediaItems(0,false)
   for i=r.CountTracks(0)-1,0,-1 do r.DeleteTrack(r.GetTrack(0,i)) end
+  for i=r.CountTempoTimeSigMarkers(0)-1,0,-1 do r.DeleteTempoTimeSigMarker(0,i) end
+  r.SetCurrentBPM(0,120,false)
   r.SetEditCurPos(0,false,false)
   r.Undo_OnStateChange('Test: reset')
 end
@@ -78,7 +80,8 @@ function T.wait(check,timeout)
 end
 
 -- Run steps one after another across defer cycles. A step is a function that
--- returns true when done, or a number of seconds to let the editor draw.
+-- returns true when done, or a list of further steps to run next, or a number
+-- of seconds to let the editor draw.
 function T.steps(list,timeout)
   local i,resume,deadline=1,nil,r.time_precise()+(timeout or 45)
   return function()
@@ -88,7 +91,9 @@ function T.steps(list,timeout)
     if resume then if r.time_precise()<resume then return end; resume=nil; i=i+1 end
     local step=list[i]; if not step then return true end
     if type(step)=='number' then resume=r.time_precise()+step; return end
-    if step() then i=i+1 end
+    local done=step()
+    if type(done)=='table' then for k=#done,1,-1 do table.insert(list,i+1,done[k]) end end
+    if done then i=i+1 end
   end
 end
 
@@ -107,6 +112,8 @@ end
 function T.move(x,y) sh(string.format('xdotool mousemove %d %d',x,y)) end
 function T.down(button) sh('xdotool mousedown '..(button or 1)) end
 function T.up(button) sh('xdotool mouseup '..(button or 1)) end
+-- Hold modifiers with keydown/keyup across frames; "shift+Left" in one
+-- xdotool call can release Shift before the editor sees the arrow.
 function T.keys(...) sh('xdotool key --delay 100 '..table.concat({...},' ')) end
 function T.keydown(k) sh('xdotool keydown '..k) end
 function T.keyup(k) sh('xdotool keyup '..k) end
@@ -209,5 +216,16 @@ function T.cc_at(take,channel,cc,qn)
   for _,e in ipairs(T.ccs(take)) do if e[2]==channel and e[3]==cc and e[1]<=ppq then value=e[4] end end
   return value
 end
+
+-- Position of the editor window on the display, {x,y,w,h}.
+function T.window()
+  local f=io.popen('DISPLAY=:99 xdotool search --onlyvisible --name "^Fluent MIDI Editor$" getwindowgeometry --shell 2>/dev/null')
+  local out=f:read('a'); f:close()
+  local x,y,w,h=out:match('X=(%-?%d+)'),out:match('Y=(%-?%d+)'),out:match('WIDTH=(%d+)'),out:match('HEIGHT=(%d+)')
+  T.ok(x,'editor window not found')
+  return {tonumber(x),tonumber(y),tonumber(w),tonumber(h)}
+end
+-- The ruler above the piano roll: a y inside it, 141 px below the window top.
+function T.ruler_y() return T.window()[2]+141 end
 
 return T
