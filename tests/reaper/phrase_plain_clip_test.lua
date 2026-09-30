@@ -1,7 +1,7 @@
 -- Lengthening the phrase of a plain clip adds empty space; it neither copies
 -- notes nor turns on Repeat phrase (guide: "Without repeat, lengthening adds
 -- empty space"). REAPER creates MIDI items with Loop source on, and a single
--- cycle of the source is still a plain clip.
+-- cycle of the source is still a plain clip: it keeps looping at its new length.
 local T=dofile(ROOT..'/tests/reaper/support.lua')
 local r=reaper
 T.reset()
@@ -17,4 +17,9 @@ local count=0
 for i=0,r.CountTrackMediaItems(track)-1 do count=count+#T.notes(r.GetActiveTake(r.GetTrackMediaItem(track,i))) end
 T.eq(S.clips[1].repeating,false,'Repeat phrase after lengthening')
 T.eq(count,2,'notes on the track after lengthening 4 -> 8 bars')
+T.eq(r.CountTrackMediaItems(track),1,'clips on the track')
+local grown=r.GetTrackMediaItem(track,0)
+T.eq(r.GetMediaItemInfo_Value(grown,'B_LOOPSRC'),1,'Loop source after lengthening')
+T.eq(r.TimeMap2_timeToQN(0,r.GetMediaItemInfo_Value(grown,'D_LENGTH')),32,'clip length in beats')
+T.eq(S.clips[1].source.end_ppq,32*960,'the loop (source) ends with the clip')
 print('lengthening adds empty space')

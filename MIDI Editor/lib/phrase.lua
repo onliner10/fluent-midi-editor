@@ -56,6 +56,29 @@ function P.extend(source,pattern_start,pattern_end,ending)
   end
   return pack(events,ending)
 end
+-- Copies of [a,z) from a up to finish, like Ctrl+D on the whole clip. The
+-- rest of the source stays; whatever was hidden in [z,finish) is replaced.
+function P.duplicate(source,a,z,finish)
+  local events,notes={},{}
+  for _,note in ipairs(source.notes) do notes[note.id]=note end
+  for i,event in ipairs(source.events) do
+    local note=event.note_id and notes[event.note_id]
+    local outside
+    if note then outside=note.off.pos<=a or note.on.pos>=finish
+    else outside=event.pos<a or event.pos>=finish end
+    if outside and not (i==#source.events and terminal(event)) then
+      events[#events+1]={pos=event.pos,flags=event.flags,msg=event.msg,order=#events+1}
+    end
+  end
+  for _,event in ipairs(occurrences(source,a,z,a,finish)) do
+    event.order=#events+1; events[#events+1]=event
+  end
+  return pack(events,math.max(finish,source.end_ppq))
+end
+-- The same source ending later: the part that grows is silent.
+function P.lengthen(source,ending)
+  return P.duplicate(source,ending,ending+1,ending)
+end
 function P.detach(r,b)
   local ok,chunk=r.GetItemStateChunk(b.item,'',false); assert(ok,'Could not back up the phrase')
   local _,takeid=r.GetSetMediaItemTakeInfo_String(b.take,'GUID','',false)

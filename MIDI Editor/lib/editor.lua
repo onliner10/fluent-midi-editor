@@ -313,9 +313,9 @@ function E.run(r,initial_item,dir)
     if not S.lengthEdit or S.lengthEdit.item~=b.item then
       S.lengthEdit={item=b.item,text=L.format(value)}; S.lengthEditing=false; S.lengthError=nil
     elseif not S.lengthEditing then S.lengthEdit.text=L.format(value) end
-    local function apply(bars)
+    local function apply(bars,duplicate)
       local showWholeGroup=S.start<=.25 and S.start+S.span>=(B.view_length or B.length)
-      local ok,message=B:resize_phrase(L,bars,S.matchLoop)
+      local ok,message=B:resize_phrase(L,bars,S.matchLoop,duplicate)
       if ok then
         S.notes=M.copy(B.notes or {}); rows(); S.range=nil
         if showWholeGroup then S.start=0; S.span=math.max(1,(B.view_length or B.length)+.5) end
@@ -332,7 +332,8 @@ function E.run(r,initial_item,dir)
     S.lengthEdit.text=text
     S.lengthEditing=ImGui.IsItemActive(ctx)
     S.lengthInputUsed=S.lengthEditing or wasEditing
-    tip((b.looped or b.repeating) and 'Length of the editable phrase. Lengthening pulls the next repeat into the phrase; its notes become editable separately. Enter applies.' or
+    local repeats=(b.looped and not b.single) or b.repeating
+    tip(repeats and 'Length of the editable phrase. Lengthening pulls the next repeat into the phrase; its notes become editable separately. Enter applies.' or
       'Bars, e.g. 4 or 0.5. Enter applies, Escape cancels. Notes past the end are kept.')
     if S.lengthEditing and not wasEditing then S.lengthError=nil end
     if S.lengthInputUsed and ImGui.IsKeyPressed(ctx,ImGui.Key_Escape) then
@@ -346,8 +347,8 @@ function E.run(r,initial_item,dir)
     if button('÷2##length_half',false,30) then apply(clip_info(b).phrase/2) end
     tip('Halve the clip; keep notes past the end')
     ImGui.SameLine(ctx)
-    if button('×2##length_double',false,30) then apply(clip_info(b).phrase*2) end
-    tip((b.looped or b.repeating) and 'Double the phrase: make the next repeat editable.' or 'Double the clip length. To duplicate notes: Ctrl+D.')
+    if button('×2##length_double',false,30) then apply(clip_info(b).phrase*2,true) end
+    tip(repeats and 'Double the phrase: make the next repeat editable.' or 'Double the clip: copy its notes into the new half.')
     local info=clip_info(b); local ending=info.ending
     if ending-b.item_view_start>b.length+1e-7 then
       text_muted('With repeats: '..info.extent..' bars')
@@ -356,7 +357,7 @@ function E.run(r,initial_item,dir)
       ImGui.TextWrapped(ctx,'Repeats come from another set of clips. Press Enter in Length to fit them here.')
     end
     local changed
-    if b.looped then
+    if b.looped and not b.single then
       text_muted('Clip loop source: on')
       tip('Repeating is already stored in REAPER. Edit the first pass; the dashed copies update with it.')
     else

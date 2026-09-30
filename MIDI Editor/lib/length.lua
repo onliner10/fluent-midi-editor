@@ -31,7 +31,9 @@ function L.end_qn(r,b,bars)
   local _,a,z=r.TimeMap_GetMeasureInfo(b.project,measure)
   return a+(target-measure)*(z-a)
 end
-function L.resize(r,b,bars,match_loop,group_transaction)
+-- phrase: the phrase module, which rewrites the source when it must grow.
+-- duplicate: the part that grows gets copies of the current clip, not silence.
+function L.resize(r,b,bars,match_loop,group_transaction,phrase,duplicate)
   if not b or not b:valid() then return false,'The project or clip changed. Select the clip again.' end
   if type(bars)~='number' or bars~=bars or bars<=0 or bars>4096 then return false,'Enter a length above 0 and up to 4096 bars.' end
   if r.GetPlayStateEx(b.project)&4~=0 then return false,'Stop recording before changing the length.' end
@@ -44,20 +46,25 @@ function L.resize(r,b,bars,match_loop,group_transaction)
   local a,z=r.GetSet_LoopTimeRange2(b.project,false,true,0,0,false)
   if math.abs(seconds-b.item_length)<1e-8 and
     (not match_loop or math.abs(a-b.position)<1e-8 and math.abs(z-b.position-seconds)<1e-8) then return true end
-  -- Turning off a single source cycle lets extensions add silence and lets a
-  -- trim retain its source tail. Repeated sources need materializing first.
-  if b.looped then
-    local old_end=r.TimeMap2_timeToQN(b.project,b.position+b.item_length)
-    if b.to_ppq(start-b.origin)<-1e-7 or b.to_ppq(old_end-b.origin)>b.source.end_ppq+1e-7 then
-      return false,'The clip loops its MIDI source. Glue it in REAPER first to change its length here.'
-    end
+  -- A clip that plays one pass of its looped source keeps Loop source on: the
+  -- source grows with the clip, and a trim keeps its tail hidden in the source.
+  -- Repeated sources need materializing first.
+  if b.looped and not b.single then
+    return false,'The clip loops its MIDI source. Glue it in REAPER first to change its length here.'
+  end
+  local old_end=r.TimeMap2_timeToQN(b.project,b.position+b.item_length)
+  local raw
+  if duplicate and ending>old_end+1e-9 then
+    raw=phrase.duplicate(b.source,b.to_ppq(start-b.origin),b.to_ppq(old_end-b.origin),b.to_ppq(ending-b.origin))
+  elseif b.looped and b.to_ppq(ending-b.origin)>b.source.end_ppq then
+    raw=phrase.lengthen(b.source,b.to_ppq(ending-b.origin))
   end
   local got,chunk=r.GetItemStateChunk(b.item,'',false)
   if not got then return false,'Could not back up the clip.' end
   local ta,tz=r.GetSet_LoopTimeRange2(b.project,false,false,0,0,false)
   if not group_transaction then r.Undo_BeginBlock2(b.project); r.PreventUIRefresh(1) end
   local ok,err=xpcall(function()
-    if b.looped then assert(r.SetMediaItemInfo_Value(b.item,'B_LOOPSRC',0),'Could not turn off source looping') end
+    if raw then assert(r.MIDI_SetAllEvts(b.take,raw),'Could not write MIDI'); r.MIDI_Sort(b.take) end
     assert(r.SetMediaItemInfo_Value(b.item,'D_LENGTH',seconds),'Could not change the clip length')
     r.UpdateItemInProject(b.item)
     if match_loop then r.GetSet_LoopTimeRange2(b.project,true,true,b.position,b.position+seconds,false) end
