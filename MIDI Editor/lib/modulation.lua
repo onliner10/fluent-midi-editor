@@ -133,7 +133,8 @@ end
 function A.samples(lane,to_ppq,end_ppq)
   local result={}; local ps=copy(lane.points); A.sort(ps)
   local zero=to_ppq(0); local per_qn=to_ppq(1)-zero
-  for _,p in ipairs(ps) do p.t=(math.floor(to_ppq(p.t)+.5)-zero)/per_qn end
+  local function on_tick(t) return (math.floor(to_ppq(t)+.5)-zero)/per_qn end
+  for _,p in ipairs(ps) do p.t=on_tick(p.t); if p.ct then p.ct=on_tick(p.ct) end end
   local normalized=copy(lane); normalized.points=ps
   local previous,emitted=nil,{}
   local function add(q,v,force)

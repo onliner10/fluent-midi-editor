@@ -44,7 +44,8 @@ One gesture across several tracks is one Undo step in REAPER.
 In the left panel, below the track list, the **Phrase length** field applies to the clip
 selected on the left; its name is shown above the field. Enter a number of bars, e.g. `4`,
 `0.5` or `1,5`, and press **Enter**. **Escape** cancels the input.
-The **÷2 / ×2** buttons halve or double the phrase right away.
+The **÷2 / ×2** buttons halve or double the phrase right away. **×2** copies the
+current notes into the new half, like Ctrl+D on the whole clip.
 
 This is the length of the **editable phrase**, not of the whole clip with repeats. For example,
 a 4-bar clip can contain a 2-bar phrase played twice: the field shows
@@ -60,7 +61,9 @@ Other open phrases keep their length.
 
 Turn on **Repeat phrase** on a shorter clip to make it play until the end of the longest
 clip in the current group. Existing REAPER repeats (Loop source) are
-detected automatically. Opening the editor alone changes neither clips nor MIDI.
+detected automatically. REAPER turns Loop source on for every new MIDI clip; a clip
+that plays one pass of its source is a regular clip, and its loop follows the
+clip length when the length changes. Opening the editor alone changes neither clips nor MIDI.
 Above the grid each track has a labeled strip: the first pass is **editable**,
 later ones are **read-only**. These strips only show length; they have no drag handles.
 One cursor runs across the shared timeline.
@@ -181,6 +184,9 @@ channel, polyphonic aftertouch on its key and REAPER notation for it
 **MPE recordings** (Seaboard, LinnStrument, Osmose and the like) give each
 note its own channel. The editor recognises such a clip when several channels
 each play one note at a time and carry pitch bend, channel pressure or CC74.
+A single channel with pitch bend, or a channel with its own program change, is an
+ordinary part: notes you add keep the channel you chose. A clip the editor wrote
+as MPE stays MPE when you delete all voices but one.
 Each note then owns that expression, including the values sent just before it
 starts and its release tail:
 
@@ -193,6 +199,11 @@ starts and its release tail:
 Channels that play chords (a zone's master channel, or an ordinary non-MPE
 clip) are left as they were: their pitch bend and CC stay at their time.
 Expression is preserved, not drawn: there is no per-note bend editor yet.
+A CC74 modulation lane on an MPE channel replaces the notes' own timbre there.
+
+Two notes of one pitch cannot sound together on one channel. As in Ableton, a note
+you move, draw or paste over the start of another note replaces it, and over its end
+shortens it.
 
 ## Cheat sheet
 
@@ -202,11 +213,11 @@ Expression is preserved, not drawn: there is no per-note bend editor yet.
 | B | Draw; dragging creates more notes |
 | Drag a note / edge | Position and pitch / start or end |
 | Rectangle with left or right button | Select notes and a time range; right works while drawing too |
-| Shift + drag on the ruler | Select a time range on all tracks |
+| Shift + click / drag on the ruler | Scrub: play from that point |
 | Shift + click | Add a note to or remove it from the selection |
 | Ctrl+A / Ctrl+Shift+A | All notes / invert selection |
 | Ctrl+D | Duplicate the selected time including silence; the copy becomes selected |
-| Ctrl + drag | Copy notes with the mouse |
+| Ctrl + drag | Copy notes with the mouse (a Ctrl+click only selects) |
 | Ctrl+C / X / V | Copy / cut / paste into the active clip at the cursor |
 | Arrows | Move notes by grid step / semitone |
 | Shift+↑ / ↓ | Transpose by an octave |
@@ -214,15 +225,15 @@ Expression is preserved, not drawn: there is no per-note bend editor yet.
 | Alt + drag the middle of a note | Velocity |
 | Drag a velocity marker | Velocity; a selected group keeps its differences |
 | Velocity slider | One value for selected notes, or the value for new notes |
-| F / 0 | Fold to used pitches / mute notes |
+| F / 0 | Fold to used pitches (keeps the zoom) / mute notes |
 | Ctrl+1 / 2 / 3 / 4 | Finer / coarser grid / triplets / snap |
 | Alt while resizing an edge | Temporarily invert snap |
 | Ctrl + wheel | Zoom time around the pointer |
-| Alt + wheel | Row height |
+| Alt + wheel | Row height (remembered; fitting the view does not change it) |
 | Shift + wheel | Scroll time |
 | Middle mouse button | Pan the view |
 | Drag the ruler | Horizontal: scroll, vertical: zoom |
-| Z / X | Show selection / all clips |
+| Z / X | Show selection / all clips; a pitch range too tall to fit folds to used pitches |
 | Space / Ctrl+L | Transport / loop playback of the selection |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo in REAPER |
 | Escape | Cancel a gesture or clear the selection |
@@ -241,8 +252,8 @@ ones with a single source loop enabled, grow when the copy extends past their en
 - Notes go straight into the active takes; they are written when you release the mouse.
 - Note editing keeps CC, pitch bend, sysex, text, flags and note-off velocity.
   The modulation lane writes only the chosen CC and its points. Ctrl+D and
-  range copy carry CC as described above; plain note moves
-  do not move CC, MPE or notation.
+  range copy carry CC as described above. A note move takes along what the
+  note owns (see "What travels with a note"); channel CC and pitch bend stay.
 - If a clip changes from outside during a gesture, the editor rejects the stale write.
   A lock on one of the edited clips stops the whole shared write.
 - A clip that loops its source several times shows the first pass for editing
