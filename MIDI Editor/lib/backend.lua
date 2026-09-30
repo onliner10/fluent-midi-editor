@@ -31,12 +31,13 @@ function B.new(r,M)
     if self.looped then self.origin=r.MIDI_GetProjQNFromPPQPos(self.take,0) end
     self.from_ppq=function(ppq) return r.MIDI_GetProjQNFromPPQPos(self.take,ppq)-self.origin end
     self.to_ppq=function(qn) return r.MIDI_GetPPQPosFromProjQN(self.take,qn+self.origin) end
-    self.source=M.decode(raw,self.from_ppq)
-    self.length=self.looped and self.from_ppq(self.source.end_ppq) or self.item_end-self.origin
-    self.length=math.max(1/16,self.length)
-    self.can_extend=not self.looped or
-      (math.abs(r.TimeMap2_timeToQN(self.project,self.position)-self.origin)<1e-7 and
-       math.abs(r.TimeMap2_timeToQN(self.project,self.position+self.item_length)-self.origin-self.length)<1e-7)
+    -- Set when the editor writes an MPE clip; see attach_expression.
+    self.known_mpe=select(2,r.GetSetMediaItemTakeInfo_String(self.take,'P_EXT:FluentMIDIMPE','',false))=='1'
+    self.source=M.decode(raw,self.from_ppq,self.known_mpe)
+    local events=self.source.events; local last=events[#events]
+    self.empty=#events==0 or #events==1 and (#last.msg==0 or last.msg:byte(1)&0xF0==0xB0 and last.msg:byte(2)==123)
+    self.single,self.length=self:extent(self.origin,self.source.end_ppq)
+    self.can_extend=not self.looped or self.single
     self.notes=self.source.notes
     self.name=r.GetTakeName(self.take)
     self.track=r.GetMediaItem_Track(self.item)
@@ -44,10 +45,23 @@ function B.new(r,M)
     _,self.hash=r.MIDI_GetHash(self.take,false,'')
     return self.notes
   end
+  -- REAPER turns Loop source on for new MIDI items. An item that starts at its
+  -- source and plays at most one pass of it is a plain clip: its length is what
+  -- is visible, and it grows. Only a source that repeats is a phrase of repeats.
+  -- An empty source repeats nothing: a new 1-bar clip stretched to 2 bars in
+  -- the arrange view is a 2-bar clip, and the first write lengthens its source.
+  function self:extent(origin,end_ppq)
+    local item_start=r.TimeMap2_timeToQN(self.project,self.position)
+    local item_end=r.TimeMap2_timeToQN(self.project,self.position+self.item_length)
+    if not self.looped then return false,math.max(1/16,item_end-origin) end
+    local source_end=r.MIDI_GetProjQNFromPPQPos(self.take,end_ppq)
+    local single=math.abs(item_start-origin)<1e-7 and (self.empty or item_end<=source_end+1e-7)
+    return single,math.max(1/16,(single and item_end or source_end)-origin)
+  end
   -- Actual item boundaries and source cycles are different quantities. Use PPQ
   -- to locate cycles even when the take has an offset, playrate or tempo change.
   function self:cycles()
-    if not self.looped or self.source.end_ppq<=0 then
+    if not self.looped or self.source.end_ppq<=0 or self.single then
       return {{s=self.item_start,e=self.item_end,offset=0,shift=0}}
     end
     local period=self.source.end_ppq
@@ -68,8 +82,7 @@ function B.new(r,M)
     if not self:valid() then return true end
     local _,hash=r.MIDI_GetHash(self.take,false,'')
     local origin=self.looped and r.MIDI_GetProjQNFromPPQPos(self.take,0) or r.TimeMap2_timeToQN(self.project,self.position)
-    local length=self.looped and r.MIDI_GetProjQNFromPPQPos(self.take,self.source.end_ppq)-origin or
-      r.TimeMap2_timeToQN(self.project,self.position+self.item_length)-origin
+    local _,length=self:extent(origin,self.source.end_ppq)
     return hash~=self.hash
       or math.abs(origin-self.origin)>1e-7 or math.abs(length-self.length)>1e-7
       or r.GetMediaItemInfo_Value(self.item,'D_POSITION')~=self.position
@@ -106,18 +119,25 @@ function B.new(r,M)
       return false,'The copy extends past the source loop. Lengthen the source in the native editor or turn off Loop source.'
     end
     local end_ppq=math.max(self.source.end_ppq,self.to_ppq(ending))
-    local source=event_source and M.decode(event_source,self.from_ppq) or self.source
+    local source=event_source and M.decode(event_source,self.from_ppq,self.known_mpe) or self.source
     local encoded=M.encode(source,notes,self.to_ppq,end_ppq)
     if encoded==raw and ending<=self.length+1e-7 then self.notes=notes; return true end
     local chunk_ok,chunk=r.GetItemStateChunk(self.item,'',false)
     if not chunk_ok then return false,'Could not back up the clip state.' end
     if not group_transaction then r.Undo_BeginBlock2(self.project); r.PreventUIRefresh(1) end
     local success,err=xpcall(function()
-      if ending>self.length+1e-7 then
+      if ending>self.length+1e-7 and not self.looped then
         assert(r.MIDI_SetItemExtents(self.item,r.TimeMap2_timeToQN(self.project,self.position),
           self.origin+ending),'Could not extend the clip')
       end
       assert(r.MIDI_SetAllEvts(self.take,encoded),'Could not write MIDI')
+      if source.mpe and not self.known_mpe then r.GetSetMediaItemTakeInfo_String(self.take,'P_EXT:FluentMIDIMPE','1',true) end
+      -- MIDI_SetItemExtents turns Loop source off. A looped clip keeps it: the
+      -- source already ends at end_ppq, so only the item grows.
+      if ending>self.length+1e-7 and self.looped then
+        assert(r.SetMediaItemInfo_Value(self.item,'D_LENGTH',
+          r.TimeMap2_QNToTime(self.project,self.origin+ending)-self.position),'Could not extend the clip')
+      end
       r.MIDI_Sort(self.take)
       r.UpdateItemInProject(self.item)
     end,debug.traceback)

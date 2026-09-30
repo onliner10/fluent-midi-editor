@@ -32,16 +32,21 @@ function R.new(r)
     local out={}; for _,item in ipairs(items(project)) do out[guid(item)]=item end; return out
   end
   function self:enabled(item) return get(item,MEMBERS)~='' end
-  function self:owner(item,project)
-    local id=get(item,OWNER); return id~='' and index(project)[id] or nil
+  -- A repeat belongs to its owner only on the owner's track. Duplicating a
+  -- repeat in REAPER copies its extstate; moved elsewhere it is a plain clip.
+  function self:owner(item,project,byid)
+    local id=get(item,OWNER); local owner=id~='' and (byid or index(project))[id]
+    if owner and r.GetMediaItem_Track(owner)==r.GetMediaItem_Track(item) then return owner end
   end
-  function self:is_copy(item) return get(item,OWNER)~='' end
+  function self:is_copy(item,project,byid) return self:owner(item,project,byid)~=nil end
   function self:context_changed(item,group)
     return self:enabled(item) and canonical(get(item,MEMBERS))~=member_ids(group)
   end
   function self:copies(project,owner)
-    local out,id={},guid(owner)
-    for _,item in ipairs(items(project)) do if get(item,OWNER)==id then out[#out+1]=item end end
+    local out,id,track={},guid(owner),r.GetMediaItem_Track(owner)
+    for _,item in ipairs(items(project)) do
+      if get(item,OWNER)==id and r.GetMediaItem_Track(item)==track then out[#out+1]=item end
+    end
     table.sort(out,function(a,b) return r.GetMediaItemInfo_Value(a,'D_POSITION')<r.GetMediaItemInfo_Value(b,'D_POSITION') end)
     return out
   end
@@ -53,14 +58,15 @@ function R.new(r)
       local ok,chunk=r.GetItemStateChunk(item,'',false); assert(ok,'Could not back up the clip')
       saved[#saved+1]={id=id,item=item,track=r.GetMediaItem_Track(item),chunk=chunk}; seen[id]=true
     end
-    for _,item in ipairs(items(project)) do if self:enabled(item) or self:is_copy(item) then add(item) end end
+    local byid=index(project)
+    for _,item in ipairs(items(project)) do if self:enabled(item) or self:is_copy(item,project,byid) then add(item) end end
     for _,item in ipairs(extra or {}) do add(item) end
     return saved
   end
   function self:restore(project,saved)
     local keep={}; for _,entry in ipairs(saved) do keep[entry.id]=true end
-    local ok=true
-    for _,item in ipairs(items(project)) do if not saved.allids[guid(item)] or self:is_copy(item) and not keep[guid(item)] then
+    local ok,byid=true,index(project)
+    for _,item in ipairs(items(project)) do if not saved.allids[guid(item)] or self:is_copy(item,project,byid) and not keep[guid(item)] then
       if not r.DeleteTrackMediaItem(r.GetMediaItem_Track(item),item) then ok=false end
     end end
     local current=index(project)
@@ -86,6 +92,7 @@ function R.new(r)
   end
   function self:sync(project,changed)
     local all=items(project)
+    local byid=index(project)
     local members=member_ids(changed)
     local plans={}
     -- The items being edited are the group. Item GUIDs saved by a previous
@@ -104,7 +111,7 @@ function R.new(r)
         end
         -- Stop at the next independent item; never overlay the user's arrangement.
         local track=r.GetMediaItem_Track(owner)
-        for _,item in ipairs(all) do if item~=owner and r.GetMediaItem_Track(item)==track and not self:is_copy(item) then
+        for _,item in ipairs(all) do if item~=owner and r.GetMediaItem_Track(item)==track and self:owner(item,project,byid)~=owner then
           local pos=r.GetMediaItemInfo_Value(item,'D_POSITION')
           if pos>=ending-1e-8 then target=math.min(target,pos) end
         end end

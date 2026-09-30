@@ -13,8 +13,8 @@ function E.run(r,initial_item,dir)
   local integration=dofile(dir..'integration.lua')
   local ctx=ImGui.CreateContext('Fluent MIDI Editor')
   local mod_ui
-  local C={bg=0x24272BFF,panel=0x2C3035FF,line=0x41464DFF,text=0xE4E8ECFF,muted=0xA5ADB7FF,
-    accent=0xFFAD59FF,note=0x76C7BDFF,black=0x272B30FF,white=0x2E3339FF}
+  local ui=dofile(dir..'theme.lua').new(ImGui,ctx)
+  local C=ui.C
   local black_keys={[1]=true,[3]=true,[6]=true,[8]=true,[10]=true}
   local S={notes={},start=0,span=16,row=53,rowh=19,grid=0.25,triplet=false,snap=true,
     draw=false,fold=false,velocity=100,channel=0,
@@ -25,8 +25,10 @@ function E.run(r,initial_item,dir)
   for _,k in ipairs(saved) do S[k]=tonumber(r.GetExtState('FluentMIDIEditor',k)) or S[k] end
   S.grid=M.clamp(S.grid,1/128,4); S.velocity=M.clamp(S.velocity,1,127)
   S.channel=M.clamp(S.channel,0,15); S.rowh=M.clamp(S.rowh,10,42); S.lane=M.clamp(S.lane,65,220)
+  -- The row height chosen with Alt + wheel; fitting the view does not change it.
+  S.userRowh=S.rowh
   local token=tostring(r.time_precise())
-  local palette={0x76C7BDFF,0xDE9CC5FF,0xE5C377FF,0x89B3EFFF,0xAECF84FF,0xCCAFF2FF}
+  local palette=ui.clips
   local function clip_color(index) return palette[((index or B.active)-1)%#palette+1] end
   local velocity_colors={}
   for i,color in ipairs(palette) do
@@ -71,9 +73,16 @@ function E.run(r,initial_item,dir)
   attach(initial)
   local function reload(keep_capture)
     if mod_ui then mod_ui:reset(keep_capture) end
+    local before,range,raws=S.notes,S.range,{}
+    for i,b in ipairs(B.clips) do raws[i]=b.source and b.source.raw end
     if B:valid() then S.notes=M.copy(B:read() or {})
     else attach(B:selected_items()) end
     S.drag=nil; S.range=nil; rows()
+    -- A change elsewhere in the project (a fader, a track name) leaves the
+    -- MIDI as it was: keep what the user selected.
+    local same=#before==#S.notes and #raws==#B.clips
+    for i,b in ipairs(B.clips) do if not b.source or b.source.raw~=raws[i] then same=false end end
+    if same then for i,n in ipairs(S.notes) do n.selected=before[i].selected end; S.range=range end
   end
   local function commit(notes,label,phrase_end,event_edits)
     local ok,message=B:commit(notes,label,phrase_end,event_edits)
@@ -156,7 +165,11 @@ function E.run(r,initial_item,dir)
     end
     commit(notes,'Paste notes and modulation',S.cursor+S.clipboard.length,edits)
   end
-  local function fit(selection,width,height)
+  -- Fit the notes (selection: the selected ones) into the piano roll as it
+  -- was last drawn. rows_only keeps the time view; can_fold lets a pitch
+  -- range that does not fit even at the shortest rows fold to used pitches.
+  local function fit(selection,rows_only,can_fold)
+    local height=S.gridH or 420
     local a,b,lo,hi=M.bounds(S.notes,selection)
     if selection and not a then return end
     if not selection then
@@ -164,18 +177,32 @@ function E.run(r,initial_item,dir)
       local _,_,ghostLo,ghostHi=M.bounds(B.ghosts)
       if ghostLo then lo=math.min(lo or ghostLo,ghostLo); hi=math.max(hi or ghostHi,ghostHi) end
     end
-    S.start=math.max(0,(a or 0)-0.25); S.span=math.max(1,(b or 16)-S.start+0.5)
+    if not rows_only then S.start=math.max(0,(a or 0)-0.25); S.span=math.max(1,(b or 16)-S.start+0.5) end
     if lo then
-      local upper=S.rowIndex[hi] or 55; local lower=S.rowIndex[lo] or upper
-      local count=lower-upper+5
-      S.rowh=M.clamp((height or 420)/math.max(12,count),20,32)
-      S.row=math.max(0,(upper+lower)/2-1-(height or 420)/S.rowh/2)
+      -- A full keyboard keeps spare rows around the notes; folded rows are all
+      -- used pitches and fill the height.
+      local function span()
+        local upper=S.rowIndex[hi] or 55; local lower=S.rowIndex[lo] or upper
+        return upper,lower,S.fold and lower-upper+1 or math.max(12,lower-upper+5)
+      end
+      local upper,lower,count=span()
+      if can_fold and not S.fold and height/count<10 then S.fold=true; rows(); upper,lower,count=span() end
+      S.rowh=M.clamp(height/count,10,32)
+      S.row=math.max(0,(upper+lower)/2-1-height/S.rowh/2)
     else S.row=math.max(0,(S.rowIndex[72] or 1)-1) end
     S.fit=false
   end
+  local function toggle_fold() S.fold=not S.fold; rows(); fit(false,true) end
   local function transport()
     if not B.project or r.EnumProjects(-1,'')~=B.project then return end
     if r.GetPlayStateEx(B.project)&1~=0 then r.OnStopButtonEx(B.project) else r.OnPlayButtonEx(B.project) end
+  end
+  -- Shift + click or drag on the ruler scrubs, as in Ableton: play from there.
+  local function scrub(q)
+    if not B.project or r.EnumProjects(-1,'')~=B.project then return end
+    S.cursor=q
+    r.SetEditCurPos2(B.project,r.TimeMap2_QNToTime(B.project,B.origin+q),false,true)
+    if r.GetPlayStateEx(B.project)&1==0 then r.OnPlayButtonEx(B.project) end
   end
   local function loop_selection()
     if not B:valid() then return end
@@ -214,9 +241,9 @@ function E.run(r,initial_item,dir)
       return
     end
     if key('B') then S.draw=not S.draw
-    elseif key('F') then S.fold=not S.fold; rows(); S.fit=true
-    elseif key('X') then fit(false)
-    elseif key('Z') then fit(true)
+    elseif key('F') then toggle_fold()
+    elseif key('X') then fit(false,false,true)
+    elseif key('Z') then fit(true,false,true)
     elseif key('D') and shift then duplicate()
     elseif key('Delete') or key('Backspace') then delete_selected()
     elseif key('0') then edit('Mute / unmute notes',function(notes) for _,n in ipairs(notes) do if n.selected then n.muted=not n.muted end end end)
@@ -237,45 +264,59 @@ function E.run(r,initial_item,dir)
             local anchor=shift and chosen[1].e or a
             local delta=dx*step
             if dx~=0 and snapping(alt) then delta=M.nudge_delta(anchor,dx,grid()) end
-            if shift and dx~=0 then M.resize(notes,delta,'right',0)
+            -- Shortening stops at one step; it never leaves a sliver of a note.
+            local shortest=math.huge; for _,n in ipairs(chosen) do shortest=math.min(shortest,n.e-n.s) end
+            if shift and dx~=0 then M.resize(notes,delta,'right',0,nil,math.min(step,shortest))
             else M.move(notes,delta,dp*(shift and 12 or 1),0) end
           end)
         else S.cursor=M.clamp(S.cursor+dx*step,0,B.length or math.huge) end
       end
     end
   end
-  local function tip(text)
-    if ImGui.IsItemHovered(ctx,ImGui.HoveredFlags_DelayNormal) then ImGui.SetTooltip(ctx,text) end
-  end
-  local function button(label,active,width)
-    if active then ImGui.PushStyleColor(ctx,ImGui.Col_Button,0xA36B37FF) end
-    local clicked=ImGui.Button(ctx,label,width or 0,26)
-    if active then ImGui.PopStyleColor(ctx) end
-    return clicked
-  end
-  local function text_muted(text) ImGui.TextColored(ctx,C.muted,text) end
+  local function tip(text) ui:tip(text) end
+  local function text_muted(text) ui:muted(text) end
+  -- Clip lengths read "1 bar", "2 bars", "0,5 bars".
+  local function bars(label) return label..(label=='1' and ' bar' or ' bars') end
+  -- One toolbar row: transport | editing | options. Tooltips name the shortcuts.
   local function header()
     local playing=r.GetPlayState()&1~=0
-    if button(playing and 'Stop' or 'Play',playing,52) then transport() end
-    tip('Space: play project')
-    ImGui.SameLine(ctx)
-    if button('Loop',r.GetSetRepeat(-1)>0,48) then
-      if r.GetSetRepeat(-1)>0 then r.GetSetRepeat(0) else loop_selection() end
+    if ui:toggle(playing and 'Stop' or 'Play',playing,'Space: play or stop the project','button') then transport() end
+    ui:same_line()
+    local looping=r.GetSetRepeat(-1)>0
+    if ui:toggle('Loop',looping,'Ctrl+L: loop the selection','button') then
+      if looping then r.GetSetRepeat(0) else loop_selection() end
     end
-    ImGui.SameLine(ctx)
-    if button('Follow',S.follow,60) then S.follow=not S.follow end
-    tip('Follow the play cursor')
-    ImGui.SameLine(ctx); ImGui.TextColored(ctx,C.text,'  FLUENT MIDI EDITOR')
-    ImGui.SameLine(ctx); text_muted(' / Clips: '..#B.clips)
-    ImGui.SameLine(ctx)
-    if button('Options',false,55) then ImGui.OpenPopup(ctx,'options') end
+    ui:same_line()
+    if ui:toggle('Follow',S.follow,'Follow the play cursor') then S.follow=not S.follow end
+    ui:divider()
+    if ui:toggle('Draw',S.draw,'B: draw notes; dragging adds more. Right-drag selects.') then S.draw=not S.draw end
+    ui:same_line()
+    if ui:toggle('Fold',S.fold,'F: show only the pitches in use') then toggle_fold() end
+    ui:same_line()
+    if ui:toggle('Snap',S.snap,'Ctrl+4: snap to the grid. Alt inverts it while dragging.') then S.snap=not S.snap end
+    ui:same_line()
+    local label='1/'..math.floor(4/S.grid+0.5)..(S.triplet and ' T' or '')
+    ui:combo('##grid',label,'combo',function()
+      for _,v in ipairs({4,2,1,0.5,0.25,0.125,0.0625,0.03125}) do
+        if ui:option('1/'..math.floor(4/v),S.grid==v) then S.grid=v end
+      end
+      ui:separator()
+      if ui:option('Triplets',S.triplet) then S.triplet=not S.triplet end
+    end,'Grid. Ctrl+1 / Ctrl+2: finer / coarser, Ctrl+3: triplets')
+    ui:same_line()
+    if ui:button('Fit','X: show all clips. Z: zoom to the selection.') then fit(false,false,true) end
+    ui:right_align(ui:width('Options'))
+    if ui:button('Options') then ImGui.OpenPopup(ctx,'options') end
+    -- Open under the button, right-aligned, so the menu stays inside the window.
+    local bx,by=ImGui.GetItemRectMax(ctx)
+    ImGui.SetNextWindowPos(ctx,bx,by+ui.space.xs,ImGui.Cond_Appearing,1,0)
     if ImGui.BeginPopup(ctx,'options') then
       if ImGui.MenuItem(ctx,'Set as default editor (MIDI double-click)') then
         local ok,err=integration.install(r,dir:sub(1,-5)) -- dir ends in 'lib/'
         S.status=ok and 'Double-clicking a MIDI clip opens Fluent MIDI Editor' or err
       end
       if ImGui.MenuItem(ctx,'Restore previous double-click') then local _,message=integration.restore(r); S.status=message end
-      ImGui.Separator(ctx)
+      ui:separator()
       if ImGui.MenuItem(ctx,'Dock in REAPER') then S.dockRequest=-1 end
       if ImGui.MenuItem(ctx,'Floating window') then S.dockRequest=0 end
       local changed; changed,S.trackFollow=ImGui.MenuItem(ctx,'Follow selected clips',nil,S.trackFollow)
@@ -285,26 +326,6 @@ function E.run(r,initial_item,dir)
       if ImGui.MenuItem(ctx,'Shortcuts and help') then S.help=not S.help end
       ImGui.EndPopup(ctx)
     end
-    ImGui.Separator(ctx)
-    if button('Draw [B]',S.draw,77) then S.draw=not S.draw end
-    ImGui.SameLine(ctx)
-    if button('Fold [F]',S.fold,68) then S.fold=not S.fold; rows(); S.fit=true end
-    ImGui.SameLine(ctx)
-    if button('Snap [Ctrl+4]',S.snap,102) then S.snap=not S.snap end; tip('Ctrl+4: snap / Alt: temporarily invert snap')
-    ImGui.SameLine(ctx); ImGui.SetNextItemWidth(ctx,80)
-    local label='1/'..math.floor(4/S.grid+0.5)..(S.triplet and ' T' or '')
-    if ImGui.BeginCombo(ctx,'##grid',label) then
-      for _,v in ipairs({4,2,1,0.5,0.25,0.125,0.0625,0.03125}) do
-        if ImGui.Selectable(ctx,'1/'..math.floor(4/v),S.grid==v) then S.grid=v end
-      end
-      ImGui.Separator(ctx)
-      if ImGui.Selectable(ctx,'Triplets',S.triplet) then S.triplet=not S.triplet end
-      ImGui.EndCombo(ctx)
-    end
-    ImGui.SameLine(ctx)
-    if button('Fit [X]',false,57) then fit(false) end
-    ImGui.SameLine(ctx); text_muted('Add to: ')
-    ImGui.SameLine(ctx); ImGui.TextColored(ctx,clip_color(B.active),B.track_name or '-')
   end
   local function length_controls()
     S.lengthInputUsed=false
@@ -313,27 +334,25 @@ function E.run(r,initial_item,dir)
     if not S.lengthEdit or S.lengthEdit.item~=b.item then
       S.lengthEdit={item=b.item,text=L.format(value)}; S.lengthEditing=false; S.lengthError=nil
     elseif not S.lengthEditing then S.lengthEdit.text=L.format(value) end
-    local function apply(bars)
+    local function apply(bars,duplicate)
       local showWholeGroup=S.start<=.25 and S.start+S.span>=(B.view_length or B.length)
-      local ok,message=B:resize_phrase(L,bars,S.matchLoop)
+      local ok,message=B:resize_phrase(L,bars,S.matchLoop,duplicate)
       if ok then
         S.notes=M.copy(B.notes or {}); rows(); S.range=nil
         if showWholeGroup then S.start=0; S.span=math.max(1,(B.view_length or B.length)+.5) end
         S.lengthEdit.text=clip_info(b).label; S.lengthError=nil
-        S.status=b.track_name..': '..S.lengthEdit.text..' bar(s)'..(S.matchLoop and ' - loop matched' or '')
+        S.status=b.track_name..': '..bars(S.lengthEdit.text)..(S.matchLoop and ' - loop matched' or '')
       else S.lengthError=message; S.status=message end
     end
-    text_muted('PHRASE LENGTH')
-    ImGui.TextColored(ctx,clip_color(B.active),b.track_name)
-    ImGui.SetNextItemWidth(ctx,72)
+    ui:heading('Phrase length')
+    ui:same_line(); ui:colored(b.track_name,clip_color(B.active))
     local wasEditing=S.lengthEditing
-    local submitted,text=ImGui.InputText(ctx,'##clip_length',S.lengthEdit.text,
-      ImGui.InputTextFlags_EnterReturnsTrue|ImGui.InputTextFlags_AutoSelectAll)
-    S.lengthEdit.text=text
-    S.lengthEditing=ImGui.IsItemActive(ctx)
-    S.lengthInputUsed=S.lengthEditing or wasEditing
-    tip((b.looped or b.repeating) and 'Length of the editable phrase. Lengthening pulls the next repeat into the phrase; its notes become editable separately. Enter applies.' or
+    local repeats=(b.looped and not b.single) or b.repeating
+    local submitted,text,active=ui:input_text('##clip_length',S.lengthEdit.text,'field',repeats and 'Length of the editable phrase. Lengthening pulls the next repeat into the phrase; its notes become editable separately. Enter applies.' or
       'Bars, e.g. 4 or 0.5. Enter applies, Escape cancels. Notes past the end are kept.')
+    S.lengthEdit.text=text
+    S.lengthEditing=active
+    S.lengthInputUsed=S.lengthEditing or wasEditing
     if S.lengthEditing and not wasEditing then S.lengthError=nil end
     if S.lengthInputUsed and ImGui.IsKeyPressed(ctx,ImGui.Key_Escape) then
       S.lengthEdit.text=L.format(value); S.lengthError=nil; S.lengthEditing=false
@@ -341,85 +360,81 @@ function E.run(r,initial_item,dir)
       local parsed,message=L.parse(text)
       if parsed then apply(parsed) else S.lengthError=message end
     elseif wasEditing and not S.lengthEditing then S.lengthEdit.text=L.format(value) end
-    ImGui.SameLine(ctx); text_muted('bars')
-    ImGui.SameLine(ctx)
-    if button('÷2##length_half',false,30) then apply(clip_info(b).phrase/2) end
-    tip('Halve the clip; keep notes past the end')
-    ImGui.SameLine(ctx)
-    if button('×2##length_double',false,30) then apply(clip_info(b).phrase*2) end
-    tip((b.looped or b.repeating) and 'Double the phrase: make the next repeat editable.' or 'Double the clip length. To duplicate notes: Ctrl+D.')
+    ui:same_line(); ui:label('bars')
+    ui:right_align(2*ui:width('',"icon")+ui.space.sm)
+    if ui:button('÷2##length_half','Halve the clip; keep notes past the end','icon') then apply(clip_info(b).phrase/2) end
+    ui:same_line()
+    if ui:button('×2##length_double',repeats and 'Double the phrase: make the next repeat editable.' or
+      'Double the clip: copy its notes into the new half.','icon') then apply(clip_info(b).phrase*2,true) end
     local info=clip_info(b); local ending=info.ending
     if ending-b.item_view_start>b.length+1e-7 then
-      text_muted('With repeats: '..info.extent..' bars')
+      text_muted('With repeats: '..bars(info.extent))
     end
     if b.repeat_context_changed then
-      ImGui.TextWrapped(ctx,'Repeats come from another set of clips. Press Enter in Length to fit them here.')
+      ui:warning('Repeats come from another set of clips. Press Enter in Length to fit them here.')
     end
     local changed
-    if b.looped then
-      text_muted('Clip loop source: on')
-      tip('Repeating is already stored in REAPER. Edit the first pass; the dashed copies update with it.')
+    if b.looped and not b.single then
+      text_muted('REAPER loops this clip')
+      tip('The clip plays its '..bars(clip_info(b).label)..' source '..b.native_cycles..' times. Edit the first pass; the dashed copies update with it.')
+      ui:right_align(ui:width('Unroll'))
+      if ui:button('Unroll','Write out the loop so all '..bars(clip_info(b).item)..' are editable. It sounds the same.') then
+        local ok,message=B:unroll(L,B.active,S.matchLoop)
+        if ok then S.notes=M.copy(B.notes or {}); rows(); S.range=nil end
+        S.status=ok and b.track_name..': '..bars(clip_info(b).label)..' editable' or message
+      end
     else
-      local toggle,enabled=ImGui.Checkbox(ctx,'Repeat phrase',b.repeating)
+      local toggle,enabled=ui:switch('Repeat phrase',b.repeating,'Repeat this phrase until the end of the longest clip in this group. Later passes are read-only.')
       if toggle then
         local ok,message=B:set_repeating(enabled,S.matchLoop)
         S.notes=M.copy(B.notes or {}); rows(); S.range=nil
         S.status=ok and (enabled and 'Repeats play in REAPER; edit the first pass.' or 'Phrase repeat off.') or message
       end
-      tip('Repeat this phrase until the end of the longest clip in this group. Later passes are read-only.')
     end
-    changed,S.matchLoop=ImGui.Checkbox(ctx,'Loop: all clips',S.matchLoop)
+    changed,S.matchLoop=ui:switch('Loop: all clips',S.matchLoop,'When the length changes, fit the loop range to all clips and repeats. The Loop button turns on looped playback.')
     if changed then r.SetExtState('FluentMIDIEditor','lengthLoop',S.matchLoop and '1' or '0',true) end
-    tip('When the length changes, fit the loop range to all clips and repeats. The Loop button turns on looped playback.')
     if S.lengthError then
-      ImGui.PushStyleColor(ctx,ImGui.Col_Text,C.accent)
-      ImGui.TextWrapped(ctx,S.lengthError); ImGui.PopStyleColor(ctx)
+      ui:warning(S.lengthError)
     end
   end
+  local SHORTCUTS={{'B','Draw'},{'F','Fold to used pitches'},{'Z','Zoom to selection'},{'X','Show all clips'},
+    {'0','Mute notes'},{'Ctrl+4','Snap'},{'Ctrl+D','Duplicate time'},{'Shift+↑↓','Octave'},
+    {'Right-click','Pick overlapping'},{'Ctrl+wheel','Zoom time'},{'Alt+wheel','Row height'},{'Shift+wheel','Scroll time'}}
   local function sidebar(height)
-    ImGui.PushStyleVar(ctx,ImGui.StyleVar_ItemSpacing,8,4)
-    ImGui.PushStyleVar(ctx,ImGui.StyleVar_FramePadding,6,3)
-    if ImGui.BeginChild(ctx,'Inspector',230,height,ImGui.ChildFlags_Borders) then
-      ImGui.TextColored(ctx,C.muted,'TRACKS / CLIPS')
-      ImGui.Spacing(ctx)
+    ui:panel('Inspector',ui.size.sidebar,height,function()
+      ui:heading('Tracks',true)
       for i,b in ipairs(B.clips) do
-        ImGui.PushStyleColor(ctx,ImGui.Col_Text,clip_color(i))
-        ImGui.PushStyleColor(ctx,ImGui.Col_Header,(clip_color(i)&0xFFFFFF00)|0x28)
-        ImGui.PushStyleColor(ctx,ImGui.Col_HeaderHovered,(clip_color(i)&0xFFFFFF00)|0x40)
-        if ImGui.Selectable(ctx,(i==B.active and '> ' or '  ')..b.track_name..' · '..clip_info(b).label..' bars##clip'..i,i==B.active,0,0,24) then
+        if ui:list_row('##clip'..i,i==B.active,clip_color(i),b.track_name,bars(clip_info(b).label),
+          'New notes and pastes go to the highlighted clip. Notes on all tracks stay editable.') then
           B:set_active(i); S.channel=b.notes[1] and b.notes[1].channel or 0
           S.status='New notes: '..b.track_name
         end
-        ImGui.PopStyleColor(ctx,3)
-        tip('Click: add and paste new notes here. Notes on all tracks stay editable without switching.')
-        if b.name and b.name~='' and b.name~=b.track_name then text_muted(b.name) end
-        if b.native_repeats then text_muted('Clip '..clip_info(b).item..' bars · '..b.native_cycles..' passes') end
-        ImGui.Spacing(ctx)
+        local detail=b.name and b.name~='' and b.name~=b.track_name and b.name or nil
+        if b.native_repeats then detail=(detail and detail..' · ' or '')..'clip '..bars(clip_info(b).item)..', '..b.native_cycles..' passes' end
+        if detail then ui:indent(); ui:muted(detail) end
       end
-      if #B.clips==0 then ImGui.TextWrapped(ctx,'Select MIDI clips in REAPER.') end
-      ImGui.Spacing(ctx); ImGui.Separator(ctx)
-      length_controls()
-      ImGui.Spacing(ctx); ImGui.Separator(ctx)
-      text_muted(selected_count()..' / '..#S.notes..' notes selected')
-      ImGui.Spacing(ctx)
-      ImGui.SetNextItemWidth(ctx,-1)
-      local changed,v=ImGui.SliderInt(ctx,'##velocity',S.velocity,1,127,'Velocity  %d')
+      if #B.clips==0 then ui:muted('Select MIDI clips in REAPER.')
+      else ui:separator(); length_controls() end
+      ui:separator()
+      ui:heading('Notes')
+      local count=selected_count()
+      local summary=count..' of '..#S.notes..' selected'
+      ui:right_align(ui:text_width(summary)); ui:muted(summary)
+      local changed,v,released=ui:slider_int('##velocity',S.velocity,1,127,'Velocity %d','fill',
+        'Velocity of new notes; selected notes take it when you release the slider')
       if changed then S.velocity=v end
-      if ImGui.IsItemDeactivatedAfterEdit(ctx) and selected_count()>0 then
+      if released and count>0 then
         edit('Change velocity',function(notes) for _,n in ipairs(notes) do if n.selected then n.vel=S.velocity end end end)
       end
-      tip('Default velocity; selected notes take the value when you release the slider')
-      if audition.available then _,S.preview=ImGui.Checkbox(ctx,'Preview notes',S.preview) end
-      ImGui.Spacing(ctx); ImGui.Separator(ctx)
-      text_muted('SHORTCUTS')
-      ImGui.Spacing(ctx)
-      text_muted('B   draw\nF   fold\nZ   zoom to selection\nX   all clips\n0   mute notes\n\nCtrl+4   snap on/off\nCtrl+D   duplicate time\nShift+↑/↓   octave')
-      ImGui.TextWrapped(ctx,'Right-click: pick overlapping notes')
-      ImGui.Spacing(ctx)
-      ImGui.TextWrapped(ctx,'Ctrl + wheel: zoom time\nAlt + wheel: row height\nShift + wheel: scroll time')
-      ImGui.EndChild(ctx)
-    end
-    ImGui.PopStyleVar(ctx,2)
+      if audition.available then _,S.preview=ui:switch('Preview notes',S.preview) end
+      -- The cheat sheet only where it fits; Options > Shortcuts and help has it too.
+      local _,room=ImGui.GetContentRegionAvail(ctx)
+      if room>=ui:key_hints_height(SHORTCUTS)+ui:line_height()+3*ui.space.sm then
+        ui:separator()
+        ui:heading('Shortcuts')
+        ui:key_hints(SHORTCUTS)
+      end
+    end,true)
   end
   local function create_clip()
     local proj=r.EnumProjects(-1,''); local track=r.GetSelectedTrack(proj,0)
@@ -436,10 +451,12 @@ function E.run(r,initial_item,dir)
     local x,y=ImGui.GetCursorScreenPos(ctx)
     w=math.max(180,w); h=math.max(180,h)
     local header_h=28+22*#B.clips
-    local A={x=x,y=y,w=w,h=h,gx=x+64,gy=y+header_h,ry=y+header_h-24,gw=w-64,vh=math.min(S.lane,h*0.3)}
+    -- Velocity takes at most a quarter of what is under the header; the rows get the rest.
+    local A={x=x,y=y,w=w,h=h,gx=x+64,gy=y+header_h,ry=y+header_h-24,gw=w-64,vh=math.min(S.lane,math.max(48,(h-header_h-40)*0.25))}
     S.timeline_x=A.gx; S.timeline_w=A.gw
     A.gh=h-header_h-A.vh-40; A.vy=A.gy+A.gh+20; A.bottom=A.vy+A.vh
-    if S.fit then fit(false,A.gw,A.gh) end
+    S.gridH=A.gh
+    if S.fit then fit(false,false,true) end
     S.row=M.clamp(S.row,0,math.max(0,#S.rows-math.floor(A.gh/S.rowh)))
     S.start=math.max(0,S.start)
     local playq=S.cursor
@@ -479,15 +496,23 @@ function E.run(r,initial_item,dir)
     end
     local function editable_time(q)
       local b=B.clips[B.active]
-      return not (b.repeating or b.looped) or q>=b.view_start and q<b.view_end-1e-8
+      return not (b.repeating or b.looped and not b.single) or q>=b.view_start and q<b.view_end-1e-8
     end
-    ImGui.InvisibleButton(ctx,'Piano roll',w,h,ImGui.ButtonFlags_MouseButtonLeft|ImGui.ButtonFlags_MouseButtonRight|ImGui.ButtonFlags_MouseButtonMiddle)
+    ui:region('Piano roll',w,h,ImGui.ButtonFlags_MouseButtonLeft|ImGui.ButtonFlags_MouseButtonRight|ImGui.ButtonFlags_MouseButtonMiddle)
     local hovered=ImGui.IsItemHovered(ctx)
     local hint_hovered=hovered and not S.drag and ImGui.IsItemHovered(ctx,ImGui.HoveredFlags_DelayNormal|ImGui.HoveredFlags_Stationary)
     local mx,my=ImGui.GetMousePos(ctx)
     local ctrl,shift,alt=mods()
     local in_grid=inside(mx,my,A.gx,A.gy,x+w,A.gy+A.gh)
     local in_vel=inside(mx,my,A.gx,A.vy,x+w,A.bottom)
+    -- The edge a pointer grabs. The zones shrink with the note so the middle
+    -- of a short note still moves it.
+    local function grabbed_edge(n)
+      local a,z=edges(n); local room=(tx(z)-tx(a))/4
+      if math.abs(mx-tx(z))<math.min(7,room) then return 'right',a,z end
+      if math.abs(mx-tx(a))<math.min(5,room) then return 'left',a,z end
+      return nil,a,z
+    end
     local layout=rendering:update(S.notes,B.ghosts,B.clips,B.notes,B.active)
     local first_row=math.floor(S.row)+1
     local last_row=math.min(#S.rows,math.ceil(S.row+A.gh/S.rowh)+1)
@@ -515,20 +540,21 @@ function E.run(r,initial_item,dir)
         return ta==tb and a<b or ta<tb
       end) end
     end
-    rect(x,y,x+w,y+h,C.bg)
-    rect(x,y,A.gx,A.gy,C.panel)
-    rect(A.gx,y,x+w,A.gy,0x36393EFF)
-    text(x+9,A.ry+5,C.muted,'NOTE')
+    -- A panel like the others: rounded, the header rows on the panel colour.
+    ImGui.DrawList_AddRectFilled(dl,x,y,x+w,y+h,C.bg,6)
+    ImGui.DrawList_AddRectFilled(dl,x,y,x+w,A.gy,C.panel,6,ImGui.DrawFlags_RoundCornersTop)
+    text(x+9,A.ry+5,C.faint,'NOTE')
+    ui:anchor('ruler',A.gx,A.ry,x+w,A.gy); ui:anchor('notes',A.gx,A.gy,x+w,A.gy+A.gh)
     ImGui.DrawList_PushClipRect(dl,x,A.gy,x+w,A.gy+A.gh,true)
     if S.pitchTrack~=B.track or S.pitchChannel~=S.channel or S.pitchPoll~=S.lastPoll then
       S.pitchNames={}; S.pitchTrack=B.track; S.pitchChannel=S.channel; S.pitchPoll=S.lastPoll
     end
     for j=first_row,last_row do
       local p=S.rows[j]; local yy=py(p); local black=black_keys[p%12]
-      local background=black and C.black or C.white
+      local background=black and C.row_black or C.row_white
       rect(A.gx,yy,x+w,yy+S.rowh,background)
-      rect(x,yy,A.gx-1,yy+S.rowh,black and 0x25292EFF or 0x454C55FF)
-      line(x,yy+S.rowh-1,x+w,yy+S.rowh-1,0x1E202330)
+      rect(x,yy,A.gx-1,yy+S.rowh,black and C.key_black or C.key_white)
+      line(x,yy+S.rowh-1,x+w,yy+S.rowh-1,C.row_line)
       if S.rowh>=13 then
         local name=S.pitchNames[p]
         if not name then
@@ -557,8 +583,8 @@ function E.run(r,initial_item,dir)
     for q=first,S.start+S.span+step,step do
       local xx=tx(q); local bar=math.abs(q/beats_per_bar-math.floor(q/beats_per_bar+0.5))<1e-5
       local beat=math.abs(q-math.floor(q+0.5))<1e-5
-      line(xx,A.gy,xx,A.gy+A.gh,bar and 0x89939E78 or beat and 0x78838F40 or 0x78838F20)
-      line(xx,A.vy,xx,A.bottom,bar and 0x89939E60 or 0x78838F20)
+      line(xx,A.gy,xx,A.gy+A.gh,bar and C.bar_line or beat and C.beat_line or C.step_line)
+      line(xx,A.vy,xx,A.bottom,bar and C.velocity_bar or C.step_line)
     end
     local ruler_step=beats_per_bar
     while ruler_step*A.gw/S.span<65 do ruler_step=ruler_step*2 end
@@ -571,58 +597,68 @@ function E.run(r,initial_item,dir)
       end
     end
     local length=B.view_length or B.length or 16
+    -- A pass of a clip that loops its source in REAPER: clicking it unrolls the loop.
+    local loop_strip
     for i,b in ipairs(B.clips) do
       local sy=y+2+(i-1)*22
-      local function strip(a,z,label,ghost)
+      local function strip(a,z,label,ghost,native)
         local nx,ex=math.max(A.gx,tx(a)),math.min(x+w,tx(z))
         if ex<=nx then return end
-        rect(nx,sy,ex-1,sy+19,(clip_color(i)&0xFFFFFF00)|(ghost and 0x22 or 0x55))
+        local over=hovered and not S.drag and inside(mx,my,nx,sy,ex,sy+19)
+        if native then ui:anchor('loop pass '..i,nx,sy,ex,sy+19) end
+        if native and over then loop_strip=i; ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_Hand) end
+        rect(nx,sy,ex-1,sy+19,ui.alpha(clip_color(i),ghost and (native and over and 0x44 or 0x22) or 0x55))
         if ghost then dashed(nx,sy,ex-1,sy,clip_color(i)); dashed(nx,sy+19,ex-1,sy+19,clip_color(i))
         else line(nx,sy,ex-1,sy,clip_color(i),2) end
         ImGui.DrawList_PushClipRect(dl,nx+4,sy,ex-3,sy+19,true)
         text(nx+5,sy+2,C.text,label)
         ImGui.DrawList_PopClipRect(dl)
-        if hint_hovered and inside(mx,my,nx,sy,ex,sy+19) then
-          ImGui.SetTooltip(ctx,ghost and (b.track_name..': '..label..'. Edit the first pass.') or
+        if hint_hovered and over then
+          ImGui.SetTooltip(ctx,native and (b.track_name..': REAPER loops this clip\'s '..clip_info(b).label..'-bar source '..b.native_cycles..
+            ' times. Click to make all '..clip_info(b).item..' bars editable; it sounds the same.') or
+            ghost and (b.track_name..': '..label..'. Edit the first pass.') or
             (b.track_name..': clip '..clip_info(b).item..' bars, phrase '..clip_info(b).label..' bars.'))
         end
       end
-      strip(b.view_start,b.view_end,b.track_name..' · '..clip_info(b).visible..' bars · editable',false)
-      if B.show_repeats then for _,cycle in ipairs(b.repeats) do strip(cycle.s,cycle.e,'Repeat '..cycle.cycle..' · read-only',true) end end
+      strip(b.view_start,b.view_end,b.track_name..' · '..bars(clip_info(b).visible)..' · editable',false)
+      if B.show_repeats then for _,cycle in ipairs(b.repeats) do
+        if cycle.native then strip(cycle.s,cycle.e,'Loop pass '..cycle.cycle..' · click to edit',true,true)
+        else strip(cycle.s,cycle.e,'Repeat '..cycle.cycle..' · read-only',true) end
+      end end
     end
     if S.range then
-      rect(tx(S.range[1]),A.gy,tx(S.range[2]),A.gy+A.gh,0xA5CBE217)
-      rect(tx(S.range[1]),A.ry,tx(S.range[2]),A.gy,0xFFAD5935)
-      line(tx(S.range[1]),A.ry,tx(S.range[1]),A.gy+A.gh,0xFFAD5970)
-      line(tx(S.range[2]),A.ry,tx(S.range[2]),A.gy+A.gh,0xFFAD5970)
+      rect(tx(S.range[1]),A.gy,tx(S.range[2]),A.gy+A.gh,C.range_fill)
+      rect(tx(S.range[1]),A.ry,tx(S.range[2]),A.gy,C.range_ruler)
+      line(tx(S.range[1]),A.ry,tx(S.range[1]),A.gy+A.gh,C.range_edge)
+      line(tx(S.range[2]),A.ry,tx(S.range[2]),A.gy+A.gh,C.range_edge)
     end
     ImGui.DrawList_PopClipRect(dl)
     -- Note geometry and velocity have independent clips; no drawing over controls.
     ImGui.DrawList_PushClipRect(dl,A.gx,A.gy,x+w,A.gy+A.gh,true)
-    if tx(length)<x+w then rect(math.max(A.gx,tx(length)),A.gy,x+w,A.gy+A.gh,0x10121570) end
+    if tx(length)<x+w then rect(math.max(A.gx,tx(length)),A.gy,x+w,A.gy+A.gh,C.past_end) end
     local function draw_note(n)
       local yy,ey=vertical(n)
       local nh=yy and ey-yy or 0
       local a,b=edges(n)
       if yy and b>S.start and a<S.start+S.span and b>a and yy<A.gy+A.gh and yy+S.rowh>A.gy then
         local nx,ex=tx(a)+1,math.max(tx(a)+2,tx(b)-1)
-        local color=n.muted and 0x697279FF or velocity_colors[(n.take_index-1)%#palette+1][n.vel]
+        local color=n.muted and C.note_muted or velocity_colors[(n.take_index-1)%#palette+1][n.vel]
         rect(nx,yy+1,ex,yy+nh-1,color)
         if n.ghost then
           dashed(nx,yy+1,ex,yy+1,C.text); dashed(nx,yy+nh-1,ex,yy+nh-1,C.text)
           dashed(nx,yy+1,nx,yy+nh-1,C.text); dashed(ex,yy+1,ex,yy+nh-1,C.text)
-        else ImGui.DrawList_AddRect(dl,nx,yy+1,ex,yy+nh-1,(clip_color(n.take_index)&0xFFFFFF00)|0x70) end
+        else ImGui.DrawList_AddRect(dl,nx,yy+1,ex,yy+nh-1,ui.alpha(clip_color(n.take_index),0x70)) end
         if n.selected then
-          ImGui.DrawList_AddRect(dl,nx,yy+1,ex,yy+nh-1,0xFFFFFFFF,0,0,1.5)
+          ImGui.DrawList_AddRect(dl,nx,yy+1,ex,yy+nh-1,C.note_selected,0,0,1.5)
         elseif hit and S.notes[hit]==n then
           ImGui.DrawList_AddRect(dl,nx,yy+1,ex,yy+nh-1,clip_color(n.take_index),0,0,1.5)
         end
-        if n.muted then line(nx,yy+nh/2,ex,yy+nh/2,0x272D30FF) end
+        if n.muted then line(nx,yy+nh/2,ex,yy+nh/2,C.note_mute_line) end
         if ex-nx>34 and nh>=12 then
           local label_x=math.max(nx,A.gx)
           ImGui.DrawList_PushClipRect(dl,label_x+2,yy+1,ex,yy+nh-1,true)
           local label=layout[n].count>1 and B.clips[n.take_index].track_name or M.pitch_name(n.pitch)
-          text(label_x+4,yy+(nh-14)/2,n.vel<85 and C.text or 0x18232BFF,label)
+          text(label_x+4,yy+(nh-14)/2,n.vel<85 and C.text or C.note_text_dark,label)
           ImGui.DrawList_PopClipRect(dl)
         end
       end
@@ -634,10 +670,11 @@ function E.run(r,initial_item,dir)
       ImGui.DrawList_AddRect(dl,math.min(d.mx,mx),math.min(d.my,my),math.max(d.mx,mx),math.max(d.my,my),C.accent,0,0,1)
     end
     ImGui.DrawList_PopClipRect(dl)
-    rect(x,A.vy-20,x+w,A.vy,0x3C3F43FF); text(x+8,A.vy-18,C.text,'Velocity')
-    text(A.gx+13,A.vy-18,C.muted,'1 - 127'); text(x+12,A.vy+4,C.muted,'127'); text(x+30,A.bottom-16,C.muted,'1')
+    rect(x,A.vy-20,x+w,A.vy,C.panel); line(x,A.vy-20,x+w,A.vy-20,C.line); line(x,A.vy,x+w,A.vy,C.line)
+    text(x+9,A.vy-17,C.muted,'Velocity'); text(A.gx+8,A.vy-17,C.faint,'1 – 127')
+    text(x+12,A.vy+4,C.faint,'127'); text(x+30,A.bottom-16,C.faint,'1')
     ImGui.DrawList_PushClipRect(dl,A.gx,A.vy,x+w,A.bottom,true)
-    line(A.gx,A.vy+A.vh/2,x+w,A.vy+A.vh/2,0xFFFFFF13)
+    line(A.gx,A.vy+A.vh/2,x+w,A.vy+A.vh/2,C.velocity_mid)
     local ghost_velocity_hit
     for _,entry in ipairs(visible.ghost_velocity) do local n=entry.n
       local xx=tx(n.s)+(n.take_index-(#B.clips+1)/2)*4; local yy=A.bottom-4-(n.vel-1)/126*(A.vh-10)
@@ -654,14 +691,17 @@ function E.run(r,initial_item,dir)
     ImGui.DrawList_PopClipRect(dl)
     if playq>=S.start and playq<=S.start+S.span then line(tx(playq),A.ry,tx(playq),A.bottom,C.accent,1.5) end
     local overview_y=y+h-17
-    rect(A.gx,overview_y,x+w,y+h,0x1D2023FF)
+    ImGui.DrawList_AddRectFilled(dl,A.gx,overview_y,x+w,y+h,C.well,6,ImGui.DrawFlags_RoundCornersBottomRight)
     local total=math.max(length,S.start+S.span)
     for _,bar in ipairs(rendering:miniature(total,A.gw)) do
       local ny=overview_y+2+bar.row
       local color=clip_color(bar.track)
-      rect(A.gx+bar.a,ny,A.gx+bar.z,ny+2,bar.ghost and (color&0xFFFFFF00)|0x70 or color)
+      rect(A.gx+bar.a,ny,A.gx+bar.z,ny+2,bar.ghost and ui.alpha(color,0x70) or color)
     end
-    ImGui.DrawList_AddRect(dl,A.gx+S.start/total*A.gw,overview_y,A.gx+(S.start+S.span)/total*A.gw,y+h,C.muted)
+    local vx1,vx2=A.gx+S.start/total*A.gw,A.gx+(S.start+S.span)/total*A.gw
+    ImGui.DrawList_AddRectFilled(dl,vx1,overview_y+1,vx2,y+h-1,C.view_fill,3)
+    ImGui.DrawList_AddRect(dl,vx1,overview_y+1,vx2,y+h-1,C.view_edge,3)
+    ImGui.DrawList_AddRect(dl,x,y,x+w,y+h,C.line,6)
 
     if not B.take then return end
     if hovered and not S.drag then
@@ -679,19 +719,18 @@ function E.run(r,initial_item,dir)
           S.span=M.clamp(S.span*1.2^(-wheel),0.25,4096); S.start=math.max(0,anchor-fraction*S.span)
         elseif alt then
           local anchor=S.row+(my-A.gy)/S.rowh
-          S.rowh=M.clamp(S.rowh+wheel*2,10,42); S.row=anchor-(my-A.gy)/S.rowh
+          S.rowh=M.clamp(S.rowh+wheel*2,10,42); S.userRowh=S.rowh; S.row=anchor-(my-A.gy)/S.rowh
         elseif shift then S.start=math.max(0,S.start-wheel*S.span/12)
         else S.row=S.row-wheel*3 end
       end
       if horizontal~=0 then S.start=math.max(0,S.start-horizontal*S.span/12) end
       if in_grid and hit then
-        local a,z=edges(S.notes[hit])
-        if math.abs(mx-tx(z))<7 or math.abs(mx-tx(a))<5 then ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_ResizeEW) end
+        if grabbed_edge(S.notes[hit]) then ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_ResizeEW) end
       elseif S.draw and in_grid then ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_Hand) end
       if ImGui.IsMouseClicked(ctx,1) then
         if in_grid then
           local before=M.copy(S.notes); if not shift then deselect() end
-          S.drag={kind='select',mx=mx,my=my,q=tq(mx),p=pitch(my),before=before,add=shift,right=true,candidates=candidates}
+          S.drag={kind='select',mx=mx,my=my,q=tq(mx),p=pitch(my),before=before,add=shift,right=true,candidates=candidates,hit=hit}
         else ImGui.OpenPopup(ctx,'note_menu') end
       end
       if ImGui.IsMouseClicked(ctx,2) then S.drag={kind='pan',mx=mx,my=my,start=S.start,row=S.row} end
@@ -699,6 +738,11 @@ function E.run(r,initial_item,dir)
         S.follow=false
         local q=math.max(0,tq(mx)); local p=pitch(my)
         if my>=overview_y then S.drag={kind='overview'}
+        elseif loop_strip then
+          local b=B.clips[loop_strip]
+          local ok,message=B:unroll(L,loop_strip,S.matchLoop)
+          if ok then S.notes=M.copy(B.notes or {}); rows(); S.range=nil; rendering:invalidate() end
+          S.status=ok and b.track_name..': '..bars(clip_info(b).label)..' editable' or message
         elseif inside(mx,my,x,A.gy,A.gx,A.gy+A.gh) then
           if not shift then deselect() end
           for _,n in ipairs(S.notes) do if n.pitch==p then n.selected=true end end
@@ -707,8 +751,9 @@ function E.run(r,initial_item,dir)
         elseif inside(mx,my,A.gx,A.ry,x+w,A.gy) then
           S.cursor=S.snap and M.snap(q,grid()) or q
           r.SetEditCurPos2(B.project,r.TimeMap2_QNToTime(B.project,B.origin+S.cursor),true,false)
-          S.drag={kind=shift and 'time' or 'ruler',mx=mx,my=my,start=S.start,span=S.span,q=q,before=M.copy(S.notes)}
-          if ImGui.IsMouseDoubleClicked(ctx,0) then fit(selected_count()>0,A.gw,A.gh); S.drag=nil end
+          if shift then scrub(S.cursor); S.drag={kind='scrub',last=S.cursor}
+          else S.drag={kind='ruler',mx=mx,my=my,start=S.start,span=S.span,q=q,before=M.copy(S.notes)} end
+          if ImGui.IsMouseDoubleClicked(ctx,0) then fit(selected_count()>0,false,true); S.drag=nil end
         elseif inside(mx,my,x,A.vy-20,x+w,A.vy) then
           S.drag={kind='lane',my=my,lane=S.lane}
         elseif in_vel then
@@ -752,16 +797,12 @@ function E.run(r,initial_item,dir)
               -- Grab the drawn edge. A note running past the pass end is drawn
               -- clipped there; its hidden overhang is trimmed so the edge
               -- follows the mouse from where the user grabbed it.
-              local a,z=edges(n)
-              local kind=math.abs(mx-tx(z))<7 and 'right' or math.abs(mx-tx(a))<5 and 'left' or alt and 'velocity' or 'move'
+              local edge,a,z=grabbed_edge(n)
+              local kind=edge or alt and 'velocity' or 'move'
               local before=M.copy(S.notes)
-              if ctrl and kind=='move' then
-                rendering:invalidate()
-                for _,c in ipairs(M.copy(M.selected(S.notes))) do c.id=nil; S.notes[#S.notes+1]=c end
-                for i=1,#before do S.notes[i].selected=false end
-              end
-              S.drag={kind=kind,mx=mx,my=my,q=q,p=p,before=before,base=M.copy(S.notes),index=hit,anchor=n.s,anchorEnd=n.e,changed=ctrl and kind=='move',
-                shown=kind=='left' and a or kind=='right' and z or nil}
+              -- Ctrl + drag copies; the copies appear once the mouse moves.
+              S.drag={kind=kind,mx=mx,my=my,q=q,p=p,before=before,base=M.copy(S.notes),index=hit,anchor=n.s,anchorEnd=n.e,changed=false,
+                copy=ctrl and kind=='move',shown=kind=='left' and a or kind=='right' and z or nil}
             end
           else
             local before=M.copy(S.notes)
@@ -782,10 +823,9 @@ function E.run(r,initial_item,dir)
           S.span=M.clamp(d.span*1.01^(my-d.my),0.25,4096)
           S.start=math.max(0,d.q-(d.mx-A.gx)/A.gw*S.span-(mx-d.mx)/A.gw*S.span)
         end
-      elseif d.kind=='time' then
-        local a,b=math.max(0,math.min(d.q,tq(mx))),math.max(d.q,tq(mx))
-        S.range={S.snap and M.floor(a,grid()) or a,S.snap and math.ceil(b/grid())*grid() or b}
-        for _,n in ipairs(S.notes) do n.selected=n.s<S.range[2] and n.e>S.range[1] end
+      elseif d.kind=='scrub' then
+        local q=math.max(0,tq(mx)); q=S.snap and M.snap(q,grid()) or q
+        if q~=d.last then scrub(q); d.last=q end
       elseif d.kind=='select' then
         local q1,q2=math.min(d.q,tq(mx)),math.max(d.q,tq(mx))
         local y1,y2=math.min(d.my,my),math.max(d.my,my)
@@ -820,6 +860,12 @@ function E.run(r,initial_item,dir)
       elseif (d.kind=='move' or d.kind=='left' or d.kind=='right' or d.kind=='velocity') and ImGui.IsMouseDragging(ctx,0,3)
         and (mx~=d.lastX or my~=d.lastY or alt~=d.lastAlt) then
         d.lastX,d.lastY,d.lastAlt=mx,my,alt
+        if d.copy and not d.copied then
+          rendering:invalidate()
+          for _,c in ipairs(M.copy(M.selected(S.notes))) do c.id=nil; S.notes[#S.notes+1]=c end
+          for i=1,#d.before do S.notes[i].selected=false end
+          d.base=M.copy(S.notes); d.copied=true; d.changed=true
+        end
         local delta=(mx-d.mx)/A.gw*S.span
         local dp,dv=0,0
         if d.kind=='move' then
@@ -860,18 +906,25 @@ function E.run(r,initial_item,dir)
           S.notes=d.before
           if d.candidates and #d.candidates>1 then
             S.pickCandidates=d.candidates; S.pickAdd=d.add; ImGui.OpenPopup(ctx,'overlap_picker')
-          else ImGui.OpenPopup(ctx,'note_menu') end
+          else
+            -- The menu acts on the note under the pointer; a note already in
+            -- the selection keeps the whole selection.
+            local n=d.hit and S.notes[d.hit]
+            if n and not n.selected then
+              if not d.add then deselect() end
+              n.selected=true; B:set_active(n.take_index); S.velocity=n.vel; S.channel=n.channel; S.range=nil
+            end
+            ImGui.OpenPopup(ctx,'note_menu')
+          end
         end
         if d.changed then commit(S.notes,({draw='Draw notes',add='Add / delete note',move='Move notes',left='Change note start',right='Change note length',velocity='Change velocity',velocity_draw='Draw velocity'})[d.kind] or 'Edit notes') end
       end
     end
     if ImGui.BeginPopup(ctx,'overlap_picker') then
-      ImGui.Text(ctx,'Pick a note'); ImGui.Separator(ctx)
+      ui:text('Pick a note'); ui:separator()
       for _,i in ipairs(S.pickCandidates or {}) do local n=S.notes[i]
         if n then
-          ImGui.PushStyleColor(ctx,ImGui.Col_Text,clip_color(n.take_index))
-          local chosen=ImGui.Selectable(ctx,B.clips[n.take_index].track_name..' · '..M.pitch_name(n.pitch)..' · vel '..n.vel..'##pick'..i,n.selected)
-          ImGui.PopStyleColor(ctx)
+          local chosen=ui:option(B.clips[n.take_index].track_name..' · '..M.pitch_name(n.pitch)..' · vel '..n.vel..'##pick'..i,n.selected,clip_color(n.take_index))
           if chosen then
             if not S.pickAdd then deselect() end
             n.selected=true; B:set_active(n.take_index); S.velocity=n.vel; S.channel=n.channel; S.range=nil
@@ -888,20 +941,37 @@ function E.run(r,initial_item,dir)
       if ImGui.MenuItem(ctx,'Delete','Delete') then delete_selected() end
       ImGui.Separator(ctx)
       if ImGui.MenuItem(ctx,'Loop selection','Ctrl+L') then loop_selection() end
-      if ImGui.MenuItem(ctx,'Show all notes','X') then fit(false) end
+      if ImGui.MenuItem(ctx,'Show all notes','X') then fit(false,false,true) end
       ImGui.EndPopup(ctx)
     end
+  end
+  -- The piano roll's minimum height: clip strips, some rows, velocity.
+  local MIN_ROLL=38*ui.space.sm
+  local EMPTY_LINES={'Select one or more MIDI clips in the arrange view.','Their notes appear here together, on one timeline.'}
+  local function empty_state()
+    local line=ui:line_height()+ui.space.sm
+    ui:middle(4*line+2*ui.space.sm+ui.size.control)
+    local title='No MIDI clip selected'
+    ui:center(ui:text_width(title)); ui:text(title)
+    for _,text in ipairs(EMPTY_LINES) do ui:center(ui:text_width(text)); ui:muted(text) end
+    ui:gap()
+    local label='Create a MIDI clip on the selected track'
+    ui:center(ui:width(label))
+    if ui:primary(label,'Uses the time selection, or four bars at the edit cursor') then create_clip() end
+    ui:gap()
+    local hint='B draw   ·   Ctrl+D duplicate   ·   Space play'
+    ui:center(ui:text_width(hint)); ui:faint(hint)
   end
   local function help()
     if not S.help then return end
     ImGui.SetNextWindowSize(ctx,570,430,ImGui.Cond_FirstUseEver)
     local visible; visible,S.help=ImGui.Begin(ctx,'Fluent MIDI Editor - shortcuts',S.help)
     if visible then
-      ImGui.TextWrapped(ctx,'Double-click an empty cell to add a note; double-click a note to delete it. B toggles drawing. Drag a note or its left or right edge, or drag a rectangle to select.')
+      ui:wrapped('Double-click an empty cell to add a note; double-click a note to delete it. B toggles drawing. Drag a note or its left or right edge, or drag a rectangle to select.')
       ImGui.Separator(ctx)
-      ImGui.Text(ctx,'Ctrl+A / Shift+click   Select\nCtrl+C / X / V         Copy / cut / paste\nCtrl+D                 Duplicate time including silence\nShift+drag on ruler    Select a time range\nCtrl+Z / Shift+Ctrl+Z  Undo / redo in REAPER\nCtrl+1 / 2 / 3 / 4     Grid: finer / coarser / triplets / snap\nArrows                 Move notes\nShift+Up / Down        Transpose by an octave\nShift+Left / Right     Change length\nAlt+drag               Velocity (middle of a note)\nCtrl+drag              Copy notes\nF / Z / X / 0          Fold / zoom / all clips / mute\nSpace / Ctrl+L         Transport / loop selection\nMiddle button          Scroll the piano roll')
+      ui:text('Ctrl+A / Shift+click   Select\nCtrl+C / X / V         Copy / cut / paste\nCtrl+D                 Duplicate time including silence\nShift+click on ruler   Play from there\nCtrl+Z / Shift+Ctrl+Z  Undo / redo in REAPER\nCtrl+1 / 2 / 3 / 4     Grid: finer / coarser / triplets / snap\nArrows                 Move notes\nShift+Up / Down        Transpose by an octave\nShift+Left / Right     Change length\nAlt+drag               Velocity (middle of a note)\nCtrl+drag              Copy notes\nF / Z / X / 0          Fold / zoom / all clips / mute\nSpace / Ctrl+L         Transport / loop selection\nMiddle button          Scroll the piano roll')
       ImGui.Separator(ctx)
-      ImGui.TextWrapped(ctx,'Select clips on several tracks in REAPER to edit them together; clicking the track list picks where new notes go. Darker notes = lower velocity. Escape cancels a gesture. One gesture = one Undo across all tracks. The note clipboard works inside this window; pasting goes to the active clip.')
+      ui:wrapped('Select clips on several tracks in REAPER to edit them together; clicking the track list picks where new notes go. Darker notes = lower velocity. Escape cancels a gesture. One gesture = one Undo across all tracks. The note clipboard works inside this window; pasting goes to the active clip.')
       ImGui.End(ctx)
     end
   end
@@ -934,47 +1004,37 @@ function E.run(r,initial_item,dir)
     ImGui.SetNextWindowSizeConstraints(ctx,780,580,10000,10000)
     if S.dockRequest then ImGui.SetNextWindowDockID(ctx,S.dockRequest); S.dockRequest=nil end
     if S.focus then ImGui.SetNextWindowFocus(ctx); S.focus=false end
-    ImGui.PushStyleColor(ctx,ImGui.Col_WindowBg,C.bg)
-    ImGui.PushStyleColor(ctx,ImGui.Col_ChildBg,C.panel)
-    ImGui.PushStyleColor(ctx,ImGui.Col_Button,0x484D53FF)
-    ImGui.PushStyleColor(ctx,ImGui.Col_ButtonHovered,0x626971FF)
-    ImGui.PushStyleColor(ctx,ImGui.Col_ButtonActive,0x8C6542FF)
-    ImGui.PushStyleColor(ctx,ImGui.Col_FrameBg,0x24272BFF)
-    ImGui.PushStyleColor(ctx,ImGui.Col_CheckMark,C.accent)
-    ImGui.PushStyleColor(ctx,ImGui.Col_SliderGrab,C.note)
-    ImGui.PushStyleColor(ctx,ImGui.Col_Text,C.text)
-    ImGui.PushStyleColor(ctx,ImGui.Col_Separator,C.line)
-    ImGui.PushStyleVar(ctx,ImGui.StyleVar_WindowRounding,3)
-    ImGui.PushStyleVar(ctx,ImGui.StyleVar_FrameRounding,2)
-    ImGui.PushStyleVar(ctx,ImGui.StyleVar_FramePadding,8,5)
-    ImGui.PushStyleVar(ctx,ImGui.StyleVar_ItemSpacing,8,6)
+    ui:push()
     local visible; visible,S.open=ImGui.Begin(ctx,'Fluent MIDI Editor',S.open,ImGui.WindowFlags_NoScrollbar|ImGui.WindowFlags_NoScrollWithMouse)
+    -- The layout audit (theme.lua) runs when a test asks for it.
+    local audit=r.GetExtState('FluentMIDIEditor','audit')=='1'
     local drawn,draw_error=xpcall(function()
       if visible then
+      ui:begin_frame(audit)
       header()
-      local aw,ah=ImGui.GetContentRegionAvail(ctx)
-      local contenth=math.max(190,ah-25)
+      -- Everything below the toolbar is laid out to fit exactly: panels, then
+      -- one status line. Nothing is pushed past the window edge.
+      local _,ah=ImGui.GetContentRegionAvail(ctx)
+      local contenth=math.max(0,ah-ui:line_height()-ui.space.sm)
       sidebar(contenth); ImGui.SameLine(ctx)
       if B.take then
         local w=ImGui.GetContentRegionAvail(ctx)
-        ImGui.BeginGroup(ctx)
-        local mh=mod_ui:layout_height(contenth)
-        canvas(w,contenth-mh-6)
-        mod_ui:draw(w,mh)
-        ImGui.EndGroup(ctx); shortcuts()
+        ui:column(function()
+          -- The piano roll keeps a usable height; the modulation panel yields.
+          local mh=math.min(mod_ui:layout_height(contenth),math.max(mod_ui:header_height(),contenth-MIN_ROLL-ui.space.sm))
+          canvas(w,contenth-mh-ui.space.sm)
+          mod_ui:draw(w,mh)
+        end)
+        shortcuts()
       else
-        if ImGui.BeginChild(ctx,'Empty',0,contenth) then
-          ImGui.Spacing(ctx); ImGui.Spacing(ctx)
-          ImGui.Text(ctx,'Your piano roll, inside REAPER')
-          ImGui.TextWrapped(ctx,'Select one or more MIDI clips in the arrange view. Their notes appear here together.')
-          ImGui.Spacing(ctx)
-          if button('Create a MIDI clip on the selected track') then create_clip() end
-          ImGui.Spacing(ctx)
-          text_muted('B - draw   /   Ctrl+D - duplicate   /   Space - play')
-          ImGui.EndChild(ctx)
-        end
+        ui:panel('Empty',0,contenth,empty_state)
       end
-      ImGui.TextColored(ctx,C.muted,S.status)
+      ui:muted(S.status)
+      if audit then
+        local problems,layout=ui:end_frame()
+        r.SetExtState('FluentMIDIEditor','auditProblems',table.concat(problems,'\n'),false)
+        r.SetExtState('FluentMIDIEditor','auditLayout',table.concat(layout,'\n'),false)
+      end
       end
     end,debug.traceback)
     -- Preserve the original failure if ReaImGui also rejects cleanup after a
@@ -982,7 +1042,7 @@ function E.run(r,initial_item,dir)
     local ended,end_error=true
     if visible then ended,end_error=pcall(ImGui.End,ctx) end
     if drawn then help() end
-    pcall(ImGui.PopStyleVar,ctx,4); pcall(ImGui.PopStyleColor,ctx,10)
+    pcall(ui.pop,ui)
     if not drawn then error(draw_error,0) end
     if not ended then error(end_error,0) end
     if S.open then r.defer(function()
@@ -994,12 +1054,12 @@ function E.run(r,initial_item,dir)
     stop_preview()
     if r.GetExtState('FluentMIDIEditor','instance')==token then
       r.DeleteExtState('FluentMIDIEditor','heartbeat',false); r.DeleteExtState('FluentMIDIEditor','instance',false)
-      for _,k in ipairs(saved) do r.SetExtState('FluentMIDIEditor',k,tostring(S[k]),true) end
+      for _,k in ipairs(saved) do r.SetExtState('FluentMIDIEditor',k,tostring(k=='rowh' and S.userRowh or S[k]),true) end
     end
   end)
   mod_ui=dofile(dir..'modulation_ui.lua').new(r,ImGui,ctx,M,modulation,B,S,dir,function()
     S.notes=M.copy(B.notes or {}); rows()
-  end)
+  end,ui)
   tick()
 end
 return E

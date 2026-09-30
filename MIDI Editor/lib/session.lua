@@ -102,14 +102,18 @@ function G.new(r,M,backend,repetitions,phrase)
         end
       end
     end
-    -- Repeats only add information when phrases of different lengths drift
-    -- against each other; equal phrases show the first pass alone. b.repeats
-    -- stays filled because clip info reports the extent with repetitions.
+    -- Repeats add information when phrases of different lengths drift against
+    -- each other, or when a phrase plays past the end of the group's phrases
+    -- (a clip looping its source). Equal phrases show the first pass alone;
+    -- b.repeats stays filled because clip info reports the extent with repeats.
     local phrase_end,phrase_length,equal=0,nil,true
     for _,b in ipairs(self.clips) do
       local len=b.view_end-b.view_start
       if phrase_length and math.abs(len-phrase_length)>1e-6 then equal=false end
       phrase_length=phrase_length or len; phrase_end=math.max(phrase_end,b.view_end)
+    end
+    for _,b in ipairs(self.clips) do
+      for _,cycle in ipairs(b.repeats) do if cycle.e>phrase_end+1e-6 then equal=false end end
     end
     self.show_repeats=not equal
     self.view_length=equal and phrase_end or self.length
@@ -153,11 +157,13 @@ function G.new(r,M,backend,repetitions,phrase)
     if not ok then return false,(restored and 'Clips restored. ' or 'Use Undo. ')..tostring(err) end
     return true
   end
-  function self:resize_phrase(length_module,bars,match_loop)
+  -- duplicate: the clip part that grows gets copies of the current phrase (×2),
+  -- instead of silence.
+  function self:resize_phrase(length_module,bars,match_loop,duplicate)
     if type(bars)~='number' or bars~=bars or bars<=0 or bars>4096 then return false,'Enter a length above 0 and up to 4096 bars.' end
     return self:phrase_transaction('Change phrase length and repeats',function(items)
       local b=self.clips[self.active]
-      if phrase and (b.looped or b.repeating) then
+      if phrase and ((b.looped and not b.single) or b.repeating) then
         local current=length_module.phrase_bars(r,b)
         -- Applying the displayed source length can still trim a longer native
         -- looped item. Explicit length edits follow the current phrase group.
@@ -168,8 +174,20 @@ function G.new(r,M,backend,repetitions,phrase)
           repeats:set_enabled(self.project,b.item,items,true)
         end
       else
-        local ok,message=length_module.resize(r,b,bars,false,true); assert(ok,message)
+        local ok,message=length_module.resize(r,b,bars,false,true,phrase,duplicate); assert(ok,message)
       end
+    end,match_loop)
+  end
+  -- A clip that loops its source becomes one phrase as long as the clip: the
+  -- passes REAPER repeats are written out, so it sounds the same and every
+  -- pass is editable. Phrase repeat stays off.
+  function self:unroll(length_module,index,match_loop)
+    local b=self.clips[index]
+    if not (phrase and b and b.native_repeats) then return false,'This clip does not loop its source.' end
+    self:set_active(index)
+    local bars=length_module.bars(r,b)
+    return self:phrase_transaction('Make loop passes editable',function()
+      phrase.resize(r,b,bars,length_module)
     end,match_loop)
   end
   function self:set_repeating(enabled,match_loop)
@@ -212,7 +230,7 @@ function G.new(r,M,backend,repetitions,phrase)
         if phrase_end and not n.id then ending=math.max(ending,phrase_end-b.offset_in_view) end
       end
       endings[i]=ending
-      local source=event_edits and event_edits[i] and M.decode(event_edits[i].raw,b.from_ppq) or b.source
+      local source=event_edits and event_edits[i] and M.decode(event_edits[i].raw,b.from_ppq,b.known_mpe) or b.source
       local encoded=M.encode(source,split[i],b.to_ppq,math.max(b.source.end_ppq,b.to_ppq(ending)))
       if encoded~=b.source.raw or ending>b.length+1e-7 then
         if r.GetMediaItemInfo_Value(b.item,'C_LOCK')&1~=0 then return false,'Locked clip: '..b.track_name end

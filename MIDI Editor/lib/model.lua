@@ -146,33 +146,44 @@ end
 -- Events between two notes on a channel set up the next note (MPE sends the
 -- starting bend, pressure and timbre just before note-on). Events after the
 -- last note are its release tail. Returns nil for a clip that is not MPE,
--- otherwise the set of its shared (chord-playing) channels.
-local function attach_expression(events,notes,paired,from_ppq)
-  local channels,count={},0
+-- otherwise the set of its shared (chord-playing) channels. known: the clip
+-- was MPE when last written, so one voice left after deleting others stays MPE.
+local function attach_expression(events,notes,paired,from_ppq,known)
+  local channels={}
   for _,n in ipairs(paired) do
-    if not channels[n.channel] then channels[n.channel]={}; count=count+1 end
-    table.insert(channels[n.channel],n)
+    channels[n.channel]=channels[n.channel] or {}; table.insert(channels[n.channel],n)
   end
+  -- A channel with its own program is an instrument part (a GM file), not an
+  -- MPE voice; MPE controllers send no program changes on member channels.
+  local parts={}
+  for _,e in ipairs(events) do if #e.msg==2 and e.msg:byte(1)&0xF0==0xC0 then parts[e.msg:byte(1)&15]=true end end
   local owning,shared_channels={}, {}
   for channel,list in pairs(channels) do
     table.sort(list,function(a,b) return a.on.pos<b.on.pos end)
-    local mono=true
+    local mono=not parts[channel]
     for i=2,#list do if list[i].on.pos<list[i-1].off.pos then mono=false end end
     if mono then owning[channel]=list else shared_channels[channel]=true end
+  end
+  -- A modulation lane written for CC74 on a channel (its header is a text
+  -- event, see modulation.lua) is the lane's timbre, not the notes'.
+  local lanes={}
+  for _,e in ipairs(events) do
+    local channel=e.msg:match('^\255\1LMOD1|L|(%d+)|74|') if channel then lanes[tonumber(channel)]=true end
   end
   -- One parse per event: dimension, channel and value of each expression event.
   local parsed,changes,expressive,found={}, {}, {}, 0
   for i,e in ipairs(events) do
     local dimension,channel,value=expression(e.msg)
+    if dimension=='tb' and lanes[channel] then dimension=nil end
     if dimension and owning[channel] then
       parsed[i]=channel
       changes[channel]=changes[channel] or {}; table.insert(changes[channel],{dimension,value,e.pos})
       if not expressive[channel] then expressive[channel]=true; found=found+1 end
     end
   end
-  local only=next(expressive)
-  -- One expressive channel is MPE only as a member channel of a zone.
-  if not (found>=2 or (count==1 and found==1 and only>=1 and only<=14)) then return nil end
+  -- MPE spreads notes over member channels. A single channel with bend is an
+  -- ordinary part, even when it plays one note at a time.
+  if found<(known and 1 or 2) then return nil end
   local current,ended,pending,last,last_channel={}, {}, {}, nil, nil
   local function own_expression(n,e) own(n,e,from_ppq) end
   for i,e in ipairs(events) do
@@ -226,6 +237,35 @@ function M.trim_expression(copy,original,s,e)
   end
   copy.expr=shared(kept)
   if original.initial then copy.initial=shared({pb=state.pb,at=state.at,tb=state.tb}) end
+end
+-- MIDI cannot hold two sounding notes of one pitch on one channel. As in
+-- Ableton: an edited note over the start of another note replaces it; over its
+-- end, it shortens it. Two edited notes: the earlier ends where the later
+-- starts. Overlaps no edit touched stay as they are. originals: unedited notes
+-- by id. Returns the notes that remain.
+function M.resolve_overlaps(notes,originals)
+  local function edited(n)
+    local o=n.id and originals[n.id]
+    return not o or o.s~=n.s or o.e~=n.e or o.pitch~=n.pitch or o.channel~=n.channel
+  end
+  local groups={}
+  for _,n in ipairs(notes) do
+    local key=n.channel*128+n.pitch; groups[key]=groups[key] or {}; table.insert(groups[key],n)
+  end
+  local removed={}
+  for _,list in pairs(groups) do
+    table.sort(list,function(a,b) if a.s~=b.s then return a.s<b.s end; return edited(a) and not edited(b) end)
+    for i,later in ipairs(list) do
+      for j=1,i-1 do local earlier=list[j]
+        if not removed[earlier] and not removed[later] and earlier.e>later.s+1e-9 and (edited(earlier) or edited(later)) then
+          if edited(earlier) and not edited(later) then removed[later]=true
+          else earlier.e=later.s; if earlier.e-earlier.s<1e-9 then removed[earlier]=true end end
+        end
+      end
+    end
+  end
+  local out={}; for _,n in ipairs(notes) do if not removed[n] then out[#out+1]=n end end
+  return out
 end
 -- A new or moved note that lands on a channel another note is using gets the
 -- least recently used free channel of the zone, so expression stays per note.
@@ -297,7 +337,7 @@ local function settle(out)
 end
 -- Keep opaque events (CC, pitch bend, text, sysex, notation) and note-off velocity.
 -- IDs refer to original on/off events, so sorting never changes edit identity.
-function M.decode(raw,from_ppq)
+function M.decode(raw,from_ppq,known_mpe)
   from_ppq=from_ppq or function(x) return x end
   local events,notes,queues={}, {}, {}; local cursor,pos=1,0
   while cursor<=#raw do
@@ -323,7 +363,7 @@ function M.decode(raw,from_ppq)
   end end
   attach_note_data(events,paired,from_ppq)
   -- Channels that play chords in an MPE clip (a master channel) stay shared.
-  local shared_channels=attach_expression(events,notes,paired,from_ppq)
+  local shared_channels=attach_expression(events,notes,paired,from_ppq,known_mpe)
   for _,n in ipairs(paired) do if n.expr then
     local sorted=true
     for i=2,#n.expr do if n.expr[i].order<n.expr[i-1].order then sorted=false; break end end
@@ -352,6 +392,7 @@ function M.encode(source,notes,to_ppq,end_ppq)
   for _,n in ipairs(notes) do if not n.id and n.initial then mpe=true end end
   local shared_channels=source.shared or {}
   if mpe then M.allocate_channels(notes,originals,shared_channels) end
+  notes=M.resolve_overlaps(notes,originals)
   -- A note starts from the controller state it had; a new one from neutral.
   local function wants(n)
     if not mpe then return nil end

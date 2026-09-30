@@ -113,6 +113,25 @@ running the action again just brings it to the front and loads the selected clip
 **Extensions → ReaPack → Synchronize packages** fetches new versions, then open **Browse packages…** to see what changed. Your projects and shortcuts are untouched. If ReaPack says a native extension was
 updated, restart REAPER.
 
+## Trying development builds
+
+New features and fixes arrive first as **dev builds**, before they are released to
+everyone. They may be unstable. To try them:
+
+1. **Extensions → ReaPack → Browse packages…**, filter `Fluent`.
+2. Right-click **Fluent MIDI Editor** → **Enable pre-releases (bleeding-edge)**.
+3. Right-click it again → **Update to v…** (the version ending in `-dev.<n>`), then **Apply**.
+
+ReaPack then installs the newest build, stable or dev, for this package only.
+Versions like `0.11.0-dev.3` are dev builds; `0.11.0` is the release they lead to.
+To go back, untick **Enable pre-releases (bleeding-edge)** in the same menu: ReaPack
+offers the stable version again at the next release, or right-click → **Versions**
+to pick it now.
+
+If **Extensions → ReaPack → Manage repositories… → Options… → Enable pre-releases
+globally (bleeding edge)** is ticked, you already get dev builds of every package,
+including this one.
+
 ## Uninstalling
 
 **Extensions → ReaPack → Browse packages…**, filter `Fluent`, right-click the package → **Uninstall**, then **Apply**.
