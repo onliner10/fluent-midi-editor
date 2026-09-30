@@ -43,4 +43,13 @@ function I.restore(r)
   r.DeleteExtState(I.section,'double_click_command',true)
   return true,'Previous double-click action restored.'
 end
+I.links={discord='https://discord.gg/F6TJ6SDHcV',issues='https://github.com/onliner10/fluent-midi-editor/issues'}
+-- Opens a web page in the default browser: SWS when installed, else the OS opener.
+function I.open_url(r,url)
+  if r.CF_ShellExecute then r.CF_ShellExecute(url) return end
+  local os_name=r.GetOS()
+  if os_name:match('^Win') then os.execute('start "" "'..url..'"')
+  elseif os_name:match('^OSX') or os_name:match('^macOS') then os.execute('open "'..url..'"')
+  else os.execute('xdg-open "'..url..'" &') end
+end
 return I

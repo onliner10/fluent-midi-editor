@@ -144,4 +144,6 @@ restored=I.restore(r); eq(restored,true); eq(mapping,'6 m')
 -- A rejected action is reported and the previous one is put back.
 state={}; mapping='6 m'; r.SetMouseModifier=function(_,_,v) mapping=v:match('^%d+$') and '0' or v end
 local id,err=I.install(r,'R/'); eq(id,nil); assert(err:match('did not accept')); eq(mapping,'6 m')
+-- Links open through SWS when it is installed.
+local opened; I.open_url({CF_ShellExecute=function(u) opened=u end},I.links.discord); eq(opened,'https://discord.gg/F6TJ6SDHcV')
 return count
