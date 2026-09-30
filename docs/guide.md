@@ -63,9 +63,15 @@ Turn on **Repeat phrase** on a shorter clip to make it play until the end of the
 clip in the current group. Existing REAPER repeats (Loop source) are
 detected automatically. REAPER turns Loop source on for every new MIDI clip; a clip
 that plays one pass of its source is a regular clip, and its loop follows the
-clip length when the length changes. Opening the editor alone changes neither clips nor MIDI.
+clip length when the length changes. A new clip that is still empty and was stretched
+in the arrange view is a regular clip too: a 1-bar clip stretched to 2 bars opens as 2
+editable bars, and the first note written into it lengthens its source.
+Opening the editor alone changes neither clips nor MIDI.
 Above the grid each track has a labeled strip: the first pass is **editable**,
-later ones are **read-only**. These strips only show length; they have no drag handles.
+later ones are **read-only**. A clip that loops its source in REAPER labels its later
+passes **Loop pass**: click one, or **Unroll** under Phrase length, to write the loop
+out so the whole clip is editable. It sounds the same; Loop source turns off.
+The strips have no drag handles.
 One cursor runs across the shared timeline.
 
 Repeated notes have a **dashed outline**, and their velocity shows an empty marker
@@ -258,7 +264,7 @@ ones with a single source loop enabled, grow when the copy extends past their en
   A lock on one of the edited clips stops the whole shared write.
 - A clip that loops its source several times shows the first pass for editing
   and the rest as read-only repeats. Changing the phrase length
-  lets you pull repeats into independent editing.
+  lets you pull repeats into independent editing; Unroll pulls in all of them.
 - Pooled MIDI keeps sharing its source as in REAPER. Changing
   two clips from the same pool at once is rejected; edit only one of them.
 - The clipboard is internal and shared by the clips in the current window.

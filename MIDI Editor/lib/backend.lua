@@ -34,6 +34,8 @@ function B.new(r,M)
     -- Set when the editor writes an MPE clip; see attach_expression.
     self.known_mpe=select(2,r.GetSetMediaItemTakeInfo_String(self.take,'P_EXT:FluentMIDIMPE','',false))=='1'
     self.source=M.decode(raw,self.from_ppq,self.known_mpe)
+    local events=self.source.events; local last=events[#events]
+    self.empty=#events==0 or #events==1 and (#last.msg==0 or last.msg:byte(1)&0xF0==0xB0 and last.msg:byte(2)==123)
     self.single,self.length=self:extent(self.origin,self.source.end_ppq)
     self.can_extend=not self.looped or self.single
     self.notes=self.source.notes
@@ -46,18 +48,20 @@ function B.new(r,M)
   -- REAPER turns Loop source on for new MIDI items. An item that starts at its
   -- source and plays at most one pass of it is a plain clip: its length is what
   -- is visible, and it grows. Only a source that repeats is a phrase of repeats.
+  -- An empty source repeats nothing: a new 1-bar clip stretched to 2 bars in
+  -- the arrange view is a 2-bar clip, and the first write lengthens its source.
   function self:extent(origin,end_ppq)
     local item_start=r.TimeMap2_timeToQN(self.project,self.position)
     local item_end=r.TimeMap2_timeToQN(self.project,self.position+self.item_length)
     if not self.looped then return false,math.max(1/16,item_end-origin) end
     local source_end=r.MIDI_GetProjQNFromPPQPos(self.take,end_ppq)
-    local single=math.abs(item_start-origin)<1e-7 and item_end<=source_end+1e-7
+    local single=math.abs(item_start-origin)<1e-7 and (self.empty or item_end<=source_end+1e-7)
     return single,math.max(1/16,(single and item_end or source_end)-origin)
   end
   -- Actual item boundaries and source cycles are different quantities. Use PPQ
   -- to locate cycles even when the take has an offset, playrate or tempo change.
   function self:cycles()
-    if not self.looped or self.source.end_ppq<=0 then
+    if not self.looped or self.source.end_ppq<=0 or self.single then
       return {{s=self.item_start,e=self.item_end,offset=0,shift=0}}
     end
     local period=self.source.end_ppq

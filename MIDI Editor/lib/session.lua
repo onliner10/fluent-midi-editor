@@ -178,6 +178,18 @@ function G.new(r,M,backend,repetitions,phrase)
       end
     end,match_loop)
   end
+  -- A clip that loops its source becomes one phrase as long as the clip: the
+  -- passes REAPER repeats are written out, so it sounds the same and every
+  -- pass is editable. Phrase repeat stays off.
+  function self:unroll(length_module,index,match_loop)
+    local b=self.clips[index]
+    if not (phrase and b and b.native_repeats) then return false,'This clip does not loop its source.' end
+    self:set_active(index)
+    local bars=length_module.bars(r,b)
+    return self:phrase_transaction('Make loop passes editable',function()
+      phrase.resize(r,b,bars,length_module)
+    end,match_loop)
+  end
   function self:set_repeating(enabled,match_loop)
     return self:phrase_transaction(enabled and 'Turn on phrase repeat' or 'Turn off phrase repeat',function(items)
       local b=self.clips[self.active]

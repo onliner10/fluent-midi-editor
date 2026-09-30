@@ -375,8 +375,14 @@ function E.run(r,initial_item,dir)
     end
     local changed
     if b.looped and not b.single then
-      text_muted('Clip loop source: on')
-      tip('Repeating is already stored in REAPER. Edit the first pass; the dashed copies update with it.')
+      text_muted('REAPER loops this clip')
+      tip('The clip plays its '..bars(clip_info(b).label)..' source '..b.native_cycles..' times. Edit the first pass; the dashed copies update with it.')
+      ui:right_align(ui:width('Unroll'))
+      if ui:button('Unroll','Write out the loop so all '..bars(clip_info(b).item)..' are editable. It sounds the same.') then
+        local ok,message=B:unroll(L,B.active,S.matchLoop)
+        if ok then S.notes=M.copy(B.notes or {}); rows(); S.range=nil end
+        S.status=ok and b.track_name..': '..bars(clip_info(b).label)..' editable' or message
+      end
     else
       local toggle,enabled=ui:switch('Repeat phrase',b.repeating,'Repeat this phrase until the end of the longest clip in this group. Later passes are read-only.')
       if toggle then
@@ -591,24 +597,34 @@ function E.run(r,initial_item,dir)
       end
     end
     local length=B.view_length or B.length or 16
+    -- A pass of a clip that loops its source in REAPER: clicking it unrolls the loop.
+    local loop_strip
     for i,b in ipairs(B.clips) do
       local sy=y+2+(i-1)*22
-      local function strip(a,z,label,ghost)
+      local function strip(a,z,label,ghost,native)
         local nx,ex=math.max(A.gx,tx(a)),math.min(x+w,tx(z))
         if ex<=nx then return end
-        rect(nx,sy,ex-1,sy+19,ui.alpha(clip_color(i),ghost and 0x22 or 0x55))
+        local over=hovered and not S.drag and inside(mx,my,nx,sy,ex,sy+19)
+        if native then ui:anchor('loop pass '..i,nx,sy,ex,sy+19) end
+        if native and over then loop_strip=i; ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_Hand) end
+        rect(nx,sy,ex-1,sy+19,ui.alpha(clip_color(i),ghost and (native and over and 0x44 or 0x22) or 0x55))
         if ghost then dashed(nx,sy,ex-1,sy,clip_color(i)); dashed(nx,sy+19,ex-1,sy+19,clip_color(i))
         else line(nx,sy,ex-1,sy,clip_color(i),2) end
         ImGui.DrawList_PushClipRect(dl,nx+4,sy,ex-3,sy+19,true)
         text(nx+5,sy+2,C.text,label)
         ImGui.DrawList_PopClipRect(dl)
-        if hint_hovered and inside(mx,my,nx,sy,ex,sy+19) then
-          ImGui.SetTooltip(ctx,ghost and (b.track_name..': '..label..'. Edit the first pass.') or
+        if hint_hovered and over then
+          ImGui.SetTooltip(ctx,native and (b.track_name..': REAPER loops this clip\'s '..clip_info(b).label..'-bar source '..b.native_cycles..
+            ' times. Click to make all '..clip_info(b).item..' bars editable; it sounds the same.') or
+            ghost and (b.track_name..': '..label..'. Edit the first pass.') or
             (b.track_name..': clip '..clip_info(b).item..' bars, phrase '..clip_info(b).label..' bars.'))
         end
       end
       strip(b.view_start,b.view_end,b.track_name..' · '..bars(clip_info(b).visible)..' · editable',false)
-      if B.show_repeats then for _,cycle in ipairs(b.repeats) do strip(cycle.s,cycle.e,'Repeat '..cycle.cycle..' · read-only',true) end end
+      if B.show_repeats then for _,cycle in ipairs(b.repeats) do
+        if cycle.native then strip(cycle.s,cycle.e,'Loop pass '..cycle.cycle..' · click to edit',true,true)
+        else strip(cycle.s,cycle.e,'Repeat '..cycle.cycle..' · read-only',true) end
+      end end
     end
     if S.range then
       rect(tx(S.range[1]),A.gy,tx(S.range[2]),A.gy+A.gh,C.range_fill)
@@ -722,6 +738,11 @@ function E.run(r,initial_item,dir)
         S.follow=false
         local q=math.max(0,tq(mx)); local p=pitch(my)
         if my>=overview_y then S.drag={kind='overview'}
+        elseif loop_strip then
+          local b=B.clips[loop_strip]
+          local ok,message=B:unroll(L,loop_strip,S.matchLoop)
+          if ok then S.notes=M.copy(B.notes or {}); rows(); S.range=nil; rendering:invalidate() end
+          S.status=ok and b.track_name..': '..bars(clip_info(b).label)..' editable' or message
         elseif inside(mx,my,x,A.gy,A.gx,A.gy+A.gh) then
           if not shift then deselect() end
           for _,n in ipairs(S.notes) do if n.pitch==p then n.selected=true end end
