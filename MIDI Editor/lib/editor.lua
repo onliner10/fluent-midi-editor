@@ -107,6 +107,12 @@ function E.run(r,initial_item,dir)
     local notes=M.copy(S.notes); fn(notes); return commit(notes,label,phrase_end and phrase_end())
   end
   local function grid() return S.grid*(S.triplet and 2/3 or 1) end
+  -- The grid as drawn: zoomed out, steps double until lines are 9 px apart.
+  -- Drawing paints one note per drawn cell, not thousands too thin to see.
+  local function shown_grid(width)
+    local step=grid(); while width>0 and width/S.span*step<9 and step<65536 do step=step*2 end
+    return step
+  end
   local function mods()
     return ImGui.IsKeyDown(ctx,ImGui.Mod_Ctrl),ImGui.IsKeyDown(ctx,ImGui.Mod_Shift),ImGui.IsKeyDown(ctx,ImGui.Mod_Alt)
   end
@@ -600,7 +606,7 @@ function E.run(r,initial_item,dir)
       end
     end
     ImGui.DrawList_PopClipRect(dl)
-    local step=grid(); while A.gw/S.span*step<9 do step=step*2 end
+    local step=shown_grid(A.gw)
     if S.meterSource~=B.notes then
       S.meterSource=B.notes; S.beatsPerBar=4
       local num,den=r.TimeMap_GetTimeSigAtTime(B.project,B.position or 0)
@@ -815,11 +821,12 @@ function E.run(r,initial_item,dir)
             local before=M.copy(S.notes)
             if hit then table.remove(S.notes,hit)
             else
-              deselect(); local start=snapping(alt) and M.floor(q,grid()) or q
-              S.notes[#S.notes+1]={s=start,e=start+grid(),pitch=p,vel=S.velocity,channel=S.channel,selected=true,muted=false,take_index=B.active}; preview(nil,{S.notes[#S.notes]})
+              local cell=shown_grid(A.gw); deselect(); local start=snapping(alt) and M.floor(q,cell) or q
+              S.notes[#S.notes+1]={s=start,e=start+cell,pitch=p,vel=S.velocity,channel=S.channel,selected=true,muted=false,take_index=B.active}; preview(nil,{S.notes[#S.notes]})
             end
-            S.drag={kind=S.draw and 'draw' or 'add',before=before,changed=true,lastcell=math.floor(q/grid()),pitch=p,erase=hit~=nil,visited={}}
-            S.drag.visited[math.floor(q/grid())..':'..p]=true
+            local cell=shown_grid(A.gw)
+            S.drag={kind=S.draw and 'draw' or 'add',before=before,changed=true,cell=cell,lastcell=math.floor(q/cell),pitch=p,erase=hit~=nil,visited={}}
+            S.drag.visited[math.floor(q/cell)..':'..p]=true
           elseif hit then
             local n=S.notes[hit]
             B:set_active(n.take_index)
@@ -877,19 +884,20 @@ function E.run(r,initial_item,dir)
         d.moved=d.moved or math.abs(mx-d.mx)>=4 or math.abs(my-d.my)>=4
         S.range=M.selection_range(d.q,tq(mx),S.snap and grid() or 0,d.moved)
       elseif d.kind=='draw' and in_grid then
-        local q=math.max(0,tq(mx)); local p=pitch(my); local cell=math.floor(q/grid())
+        local g=d.cell
+        local q=math.max(0,tq(mx)); local p=pitch(my); local cell=math.floor(q/g)
         local low,high=math.min(cell,d.lastcell),math.max(cell,d.lastcell)
         for c=low,high do
           local id=c..':'..p
-          if not d.visited[id] and editable_time(c*grid()) then
+          if not d.visited[id] and editable_time(c*g) then
             rendering:invalidate()
             d.visited[id]=true
             if d.erase then
-              for i=#S.notes,1,-1 do local n=S.notes[i]; if n.take_index==B.active and n.pitch==p and n.s<(c+1)*grid() and n.e>c*grid() then table.remove(S.notes,i) end end
+              for i=#S.notes,1,-1 do local n=S.notes[i]; if n.take_index==B.active and n.pitch==p and n.s<(c+1)*g and n.e>c*g then table.remove(S.notes,i) end end
             else
               local occupied=false
-              for _,n in ipairs(S.notes) do if n.take_index==B.active and n.pitch==p and n.s<(c+1)*grid() and n.e>c*grid() then occupied=true; break end end
-              if not occupied then S.notes[#S.notes+1]={s=c*grid(),e=(c+1)*grid(),pitch=p,vel=S.velocity,channel=S.channel,selected=true,muted=false,take_index=B.active} end
+              for _,n in ipairs(S.notes) do if n.take_index==B.active and n.pitch==p and n.s<(c+1)*g and n.e>c*g then occupied=true; break end end
+              if not occupied then S.notes[#S.notes+1]={s=c*g,e=(c+1)*g,pitch=p,vel=S.velocity,channel=S.channel,selected=true,muted=false,take_index=B.active} end
             end
           end
         end

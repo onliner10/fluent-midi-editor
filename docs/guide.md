@@ -221,7 +221,7 @@ shortens it.
 | Gesture / shortcut | Action |
 | --- | --- |
 | Double-click empty cell / note | Add / delete note |
-| B | Draw; dragging creates more notes |
+| B | Draw; dragging creates more notes, one per grid cell as drawn (zoomed out, cells grow) |
 | Drag a note / edge | Position and pitch / start or end |
 | Rectangle with left or right button | Select notes and a time range; right works while drawing too |
 | Shift + click / drag on the ruler | Scrub: play from that point |
