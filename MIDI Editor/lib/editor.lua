@@ -331,6 +331,9 @@ function E.run(r,initial_item,dir)
         r.Main_OnCommand(40153,0)
       end
       if ImGui.MenuItem(ctx,'Shortcuts and help') then S.help=not S.help end
+      ui:separator()
+      if ImGui.MenuItem(ctx,'Discord: feedback and dev builds') then integration.open_url(r,integration.links.discord) end
+      if ImGui.MenuItem(ctx,'Report a bug on GitHub') then integration.open_url(r,integration.links.issues) end
       ImGui.EndPopup(ctx)
     end
   end
