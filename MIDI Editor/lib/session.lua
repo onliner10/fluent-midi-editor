@@ -229,8 +229,13 @@ function G.new(r,M,backend,repetitions,phrase)
       if b:changed() then self:read(); return false,'The clip changed in REAPER. Repeat the gesture.' end
       -- These source notes were outside the editor's visible item bounds, so
       -- absence from the edited list must not be interpreted as deletion.
+      -- A duplicate or paste into the clip (new notes up to phrase_end) takes
+      -- the place of notes a shortening hid there; later ones stay hidden.
+      local pasted
+      for _,n in ipairs(split[i]) do if phrase_end and not n.id then pasted=phrase_end-b.offset_in_view end end
       for _,n in ipairs(b.source.notes) do
-        if n.s>=b.edit_source_end-1e-8 or n.e<=b.edit_source_start+1e-8 then split[i][#split[i]+1]=M.copy(n) end
+        local replaced=pasted and n.s>=b.edit_source_end-1e-8 and n.s<pasted-1e-8
+        if not replaced and (n.s>=b.edit_source_end-1e-8 or n.e<=b.edit_source_start+1e-8) then split[i][#split[i]+1]=M.copy(n) end
       end
       local ending=b:edit_ending(split[i])
       if event_edits and event_edits[i] and event_edits[i].ending then ending=math.max(ending,event_edits[i].ending) end

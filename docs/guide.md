@@ -98,7 +98,8 @@ holds what played there. Without repeat, lengthening adds empty space. Shortenin
 notes past the end but keeps them in the MIDI source — without repeat, they reappear when
 you lengthen it again. Editing visible notes
 does not delete the hidden part and does not automatically restore the previous length.
-Use **Ctrl+D** to duplicate content.
+Use **Ctrl+D** to duplicate content. A duplicate or paste that lands in the hidden part
+replaces the notes hidden there; hidden notes past it stay.
 
 Repeats end no later than the next independent clip on the same
 track. The last pass may be shorter. The limit is 256 repeats per phrase.
