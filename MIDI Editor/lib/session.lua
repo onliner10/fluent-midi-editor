@@ -215,9 +215,11 @@ function G.new(r,M,backend,repetitions,phrase)
       local index=n.take_index or self.active; local b=self.clips[index]
       if not b then return false,'Select a target clip.' end
       local c=M.copy(n); c.s=c.s-b.offset_in_view; c.e=c.e-b.offset_in_view
-      -- Existing notes outside a trimmed item's view remain untouched.
+      -- Existing notes outside a trimmed item's view remain untouched. A note
+      -- moved before the first pass would be hidden (and, in a looped source,
+      -- often silent).
       local original=c.id and originals[index][c.id]
-      if c.s<-1e-7 and (not original or math.abs(c.s-original.s)>1e-7) then
+      if c.s<b.edit_source_start-1e-7 and (not original or math.abs(c.s-original.s)>1e-7) then
         return false,'A note starts before the beginning of clip '..b.track_name..'.'
       end
       split[index][#split[index]+1]=c
@@ -263,7 +265,7 @@ function G.new(r,M,backend,repetitions,phrase)
       if effect then effect.apply() end
       for _,i in ipairs(affected) do
         local done,message=self.clips[i]:commit(split[i],label,true,endings[i],event_edits and event_edits[i] and event_edits[i].raw)
-        assert(done,message)
+        if not done then refuse(message) end
       end
       if repeats then repeats:sync(self.project,items) end
     end,trace)

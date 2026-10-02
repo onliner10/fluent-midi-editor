@@ -242,11 +242,14 @@ end
 -- Ableton: an edited note over the start of another note replaces it; over its
 -- end, it shortens it. Two edited notes: the earlier ends where the later
 -- starts. Overlaps no edit touched stay as they are. originals: unedited notes
--- by id. Returns the notes that remain.
+-- by id. Returns the notes that remain; a shortened note is a copy, so the
+-- notes passed in stay as they were.
 function M.resolve_overlaps(notes,originals)
+  local ends={}
+  local function ending(n) return ends[n] or n.e end
   local function edited(n)
     local o=n.id and originals[n.id]
-    return not o or o.s~=n.s or o.e~=n.e or o.pitch~=n.pitch or o.channel~=n.channel
+    return not o or o.s~=n.s or o.e~=ending(n) or o.pitch~=n.pitch or o.channel~=n.channel
   end
   local groups={}
   for _,n in ipairs(notes) do
@@ -257,14 +260,18 @@ function M.resolve_overlaps(notes,originals)
     table.sort(list,function(a,b) if a.s~=b.s then return a.s<b.s end; return edited(a) and not edited(b) end)
     for i,later in ipairs(list) do
       for j=1,i-1 do local earlier=list[j]
-        if not removed[earlier] and not removed[later] and earlier.e>later.s+1e-9 and (edited(earlier) or edited(later)) then
+        if not removed[earlier] and not removed[later] and ending(earlier)>later.s+1e-9 and (edited(earlier) or edited(later)) then
           if edited(earlier) and not edited(later) then removed[later]=true
-          else earlier.e=later.s; if earlier.e-earlier.s<1e-9 then removed[earlier]=true end end
+          else ends[earlier]=later.s; if later.s-earlier.s<1e-9 then removed[earlier]=true end end
         end
       end
     end
   end
-  local out={}; for _,n in ipairs(notes) do if not removed[n] then out[#out+1]=n end end
+  local out={}
+  for _,n in ipairs(notes) do if not removed[n] then
+    if ends[n] then local c={}; for k,v in pairs(n) do c[k]=v end; c.e=ends[n]; n=c end
+    out[#out+1]=n
+  end end
   return out
 end
 -- A new or moved note that lands on a channel another note is using gets the

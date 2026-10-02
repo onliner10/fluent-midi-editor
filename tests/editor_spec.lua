@@ -66,6 +66,15 @@ M.move(notes,M.drag_delta(.13,.25,.25),12,0)
 close(notes[1].s,.5); close(notes[2].s,1); eq(notes[1].pitch,72); eq(notes[2].pitch,76)
 close(notes[1].e-notes[1].s,.5,'move preserves length')
 
+-- Overlap resolution leaves the notes it was given alone: a commit encodes
+-- once to compare and again to write, and a note shortened to nothing by the
+-- first pass must not reach the second.
+local stacked={note(1,1.5,71),note(1,2.75,71)}
+local kept=M.resolve_overlaps(stacked,{})
+eq(#kept,1,'two new notes on one start keep one'); eq(stacked[1].e,1.5,'input untouched'); eq(stacked[2].e,2.75,'input untouched')
+stacked={note(0,2,60),note(1,3,60)}; kept=M.resolve_overlaps(stacked,{})
+eq(#kept,2); eq(kept[1].e,1,'the earlier note ends where the later starts'); eq(stacked[1].e,2,'as a copy')
+
 local function evt(delta,flags,...) return string.pack('i4Bs4',delta,flags,string.char(...)) end
 local cc=string.char(0xB3,1,80)
 local shape=string.char(0xFF,15)..'CCBZ '..string.char(0,0,0,0,0)
