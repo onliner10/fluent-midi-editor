@@ -23,7 +23,9 @@ Requires REAPER 7 and ReaImGui with API 0.10 (ReaPack). SWS is optional;
 it enables Preview, like Ableton Live's: the headphones button above the piano
 keys. With Preview on, clicking a key or a note, adding or moving notes and
 box-selecting notes all sound them for their drawn length through the matching track's instrument,
-and the keys that sound light up. It never arms tracks.
+and the keys that sound light up. While Preview is on, the instrument track
+skips media buffering and anticipative FX so notes sound at once; closing the
+editor or turning Preview off restores its settings. It never arms tracks.
 
 ## Multiple tracks
 

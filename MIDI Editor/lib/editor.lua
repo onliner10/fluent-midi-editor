@@ -51,8 +51,9 @@ function E.run(r,initial_item,dir)
   r.SetExtState('FluentMIDIEditor','instance',token,false)
   local function stop_preview() audition:stop() end
   -- Ableton's Preview: with it on, selecting, adding or moving notes sounds them.
-  -- Takes one pitch, or a list of notes to play as a chord.
-  local function preview(pitch,notes,hold)
+  -- Takes one pitch, or a list of notes to play as a chord. layer adds them to
+  -- the notes already sounding instead of cutting those off.
+  local function preview(pitch,notes,hold,layer)
     if not (S.preview and B:valid()) then return end
     local list={}
     for _,n in ipairs(notes or {{pitch=pitch,vel=S.velocity,channel=S.channel,s=0,e=S.grid}}) do
@@ -62,7 +63,7 @@ function E.run(r,initial_item,dir)
       local sec=r.TimeMap2_QNToTime(B.project,B.origin+ending)-r.TimeMap2_QNToTime(B.project,B.origin+n.s)
       list[#list+1]={pitch=n.pitch,vel=n.vel or S.velocity,channel=n.channel or S.channel,sec=hold and 30 or sec>0 and sec or 0.1}
     end
-    audition:play(B.project,B.track,list,hold)
+    audition:play(B.project,B.track,list,hold,layer)
   end
   local function rows()
     local used={}; for _,n in ipairs(S.notes) do used[n.pitch]=true end
@@ -770,7 +771,7 @@ function E.run(r,initial_item,dir)
         local q=math.max(0,tq(mx)); local p=pitch(my)
         if my>=overview_y then S.drag={kind='overview'}
         elseif over_phones then
-          S.preview=not S.preview; if not S.preview then stop_preview() end
+          S.preview=not S.preview; if not S.preview then audition:close() end
           S.status=S.preview and 'Preview on - selecting notes plays them.' or 'Preview off.'
         elseif loop_strip then
           local b=B.clips[loop_strip]
@@ -827,7 +828,7 @@ function E.run(r,initial_item,dir)
             elseif not n.selected then deselect(); n.selected=true end
             S.range=nil
             if n.selected then
-              preview(nil,{n})
+              preview(nil,{n},false,shift)
               -- Grab the drawn edge. A note running past the pass end is drawn
               -- clipped there; its hidden overhang is trimmed so the edge
               -- follows the mouse from where the user grabbed it.
@@ -872,7 +873,7 @@ function E.run(r,initial_item,dir)
             d.played[i]=true; fresh=fresh or {}; fresh[#fresh+1]=n
           end
         end
-        if fresh then preview(nil,fresh) end
+        if fresh then preview(nil,fresh,false,true) end
         d.moved=d.moved or math.abs(mx-d.mx)>=4 or math.abs(my-d.my)>=4
         S.range=M.selection_range(d.q,tq(mx),S.snap and grid() or 0,d.moved)
       elseif d.kind=='draw' and in_grid then
@@ -1022,6 +1023,9 @@ function E.run(r,initial_item,dir)
     if B.take and not B:valid() then attach(B:selected_items()) end
     local now=r.time_precise()
     audition:tick()
+    -- The instrument track runs live while Preview is on, so notes sound at once.
+    local listening=S.preview and B.take and B:valid()
+    audition:live(listening and B.project or nil,listening and B.track or nil)
     if audition.hold and not ImGui.IsMouseDown(ctx,0) then audition:stop() end
     if not S.lastHeartbeat or now-S.lastHeartbeat>.25 then
       S.lastHeartbeat=now; r.SetExtState('FluentMIDIEditor','heartbeat',tostring(now),false)
@@ -1088,11 +1092,11 @@ function E.run(r,initial_item,dir)
     if not ended then error(end_error,0) end
     if S.open then r.defer(function()
       local ok,err=xpcall(tick,debug.traceback)
-      if not ok then r.SetExtState('FluentMIDIEditor','error',err,false); stop_preview(); r.MB(err,'Fluent MIDI Editor',0) end
+      if not ok then r.SetExtState('FluentMIDIEditor','error',err,false); audition:close(); r.MB(err,'Fluent MIDI Editor',0) end
     end) end
   end
   r.atexit(function()
-    stop_preview()
+    audition:close()
     if r.GetExtState('FluentMIDIEditor','instance')==token then
       r.DeleteExtState('FluentMIDIEditor','heartbeat',false); r.DeleteExtState('FluentMIDIEditor','instance',false)
       for _,k in ipairs(saved) do r.SetExtState('FluentMIDIEditor',k,tostring(k=='rowh' and S.userRowh or S[k]),true) end
