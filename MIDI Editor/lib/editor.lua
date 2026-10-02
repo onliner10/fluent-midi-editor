@@ -52,13 +52,17 @@ function E.run(r,initial_item,dir)
   local function stop_preview() audition:stop() end
   -- Ableton's Preview: with it on, selecting, adding or moving notes sounds them.
   -- Takes one pitch, or a list of notes to play as a chord.
-  local function preview(pitch,notes)
+  local function preview(pitch,notes,hold)
     if not (S.preview and B:valid()) then return end
     local list={}
-    for _,n in ipairs(notes or {{pitch=pitch,vel=S.velocity,channel=S.channel}}) do
-      list[#list+1]={pitch=n.pitch,vel=n.vel or S.velocity,channel=n.channel or S.channel}
+    for _,n in ipairs(notes or {{pitch=pitch,vel=S.velocity,channel=S.channel,s=0,e=S.grid}}) do
+      -- Each note sounds for the length it is drawn with.
+      local b=B.clips[n.take_index or B.active]
+      local ending=b and math.min(n.e,b.view_end) or n.e
+      local sec=r.TimeMap2_QNToTime(B.project,B.origin+ending)-r.TimeMap2_QNToTime(B.project,B.origin+n.s)
+      list[#list+1]={pitch=n.pitch,vel=n.vel or S.velocity,channel=n.channel or S.channel,sec=hold and 30 or sec>0 and sec or 0.1}
     end
-    audition:play(B.project,B.track,list)
+    audition:play(B.project,B.track,list,hold)
   end
   local function rows()
     local used={}; for _,n in ipairs(S.notes) do used[n.pitch]=true end
@@ -776,7 +780,7 @@ function E.run(r,initial_item,dir)
         elseif inside(mx,my,x,A.gy,A.gx,A.gy+A.gh) then
           if not shift then deselect() end
           for _,n in ipairs(S.notes) do if n.pitch==p then n.selected=true end end
-          preview(p)
+          preview(p,nil,true)
           S.status=M.pitch_name(p)..' - selected notes at this pitch'
         elseif inside(mx,my,A.gx,A.ry,x+w,A.gy) then
           S.cursor=S.snap and M.snap(q,grid()) or q
@@ -811,7 +815,7 @@ function E.run(r,initial_item,dir)
             if hit then table.remove(S.notes,hit)
             else
               deselect(); local start=snapping(alt) and M.floor(q,grid()) or q
-              S.notes[#S.notes+1]={s=start,e=start+grid(),pitch=p,vel=S.velocity,channel=S.channel,selected=true,muted=false,take_index=B.active}; preview(p)
+              S.notes[#S.notes+1]={s=start,e=start+grid(),pitch=p,vel=S.velocity,channel=S.channel,selected=true,muted=false,take_index=B.active}; preview(nil,{S.notes[#S.notes]})
             end
             S.drag={kind=S.draw and 'draw' or 'add',before=before,changed=true,lastcell=math.floor(q/grid()),pitch=p,erase=hit~=nil,visited={}}
             S.drag.visited[math.floor(q/grid())..':'..p]=true
@@ -823,7 +827,7 @@ function E.run(r,initial_item,dir)
             elseif not n.selected then deselect(); n.selected=true end
             S.range=nil
             if n.selected then
-              preview(n.pitch)
+              preview(nil,{n})
               -- Grab the drawn edge. A note running past the pass end is drawn
               -- clipped there; its hidden overhang is trimmed so the edge
               -- follows the mouse from where the user grabbed it.
@@ -926,7 +930,7 @@ function E.run(r,initial_item,dir)
             S.notes=M.copy(base)
             if d.kind=='move' then
               M.move(S.notes,delta,dp,0)
-              if d.lastPitch~=pitch(my) then preview(pitch(my)); d.lastPitch=pitch(my) end
+              if d.lastPitch~=pitch(my) then preview(nil,{{pitch=pitch(my),vel=S.velocity,channel=S.channel,s=d.before[d.index].s,e=d.before[d.index].e,take_index=d.before[d.index].take_index}}); d.lastPitch=pitch(my) end
             else M.resize(S.notes,delta,d.kind,0) end
           end
           d.changed=true
@@ -1018,6 +1022,7 @@ function E.run(r,initial_item,dir)
     if B.take and not B:valid() then attach(B:selected_items()) end
     local now=r.time_precise()
     audition:tick()
+    if audition.hold and not ImGui.IsMouseDown(ctx,0) then audition:stop() end
     if not S.lastHeartbeat or now-S.lastHeartbeat>.25 then
       S.lastHeartbeat=now; r.SetExtState('FluentMIDIEditor','heartbeat',tostring(now),false)
     end
