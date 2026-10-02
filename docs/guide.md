@@ -20,8 +20,10 @@ remembered double-click action, unless you changed it later in preferences.
 Both are also in the editor's **Options** menu.
 
 Requires REAPER 7 and ReaImGui with API 0.10 (ReaPack). SWS is optional;
-it enables previewing single notes through the matching track's instrument,
-without arming tracks.
+it enables Preview, like Ableton Live's: the headphones button above the piano
+keys. With Preview on, clicking a key or a note, adding or moving notes and
+box-selecting notes all sound them through the matching track's instrument,
+and the keys that sound light up. It never arms tracks.
 
 ## Multiple tracks
 

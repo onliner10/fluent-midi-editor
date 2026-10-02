@@ -50,8 +50,15 @@ function E.run(r,initial_item,dir)
   end
   r.SetExtState('FluentMIDIEditor','instance',token,false)
   local function stop_preview() audition:stop() end
-  local function preview(pitch)
-    if S.preview and B:valid() then audition:play(B.project,B.track,pitch,S.velocity,S.channel) end
+  -- Ableton's Preview: with it on, selecting, adding or moving notes sounds them.
+  -- Takes one pitch, or a list of notes to play as a chord.
+  local function preview(pitch,notes)
+    if not (S.preview and B:valid()) then return end
+    local list={}
+    for _,n in ipairs(notes or {{pitch=pitch,vel=S.velocity,channel=S.channel}}) do
+      list[#list+1]={pitch=n.pitch,vel=n.vel or S.velocity,channel=n.channel or S.channel}
+    end
+    audition:play(B.project,B.track,list)
   end
   local function rows()
     local used={}; for _,n in ipairs(S.notes) do used[n.pitch]=true end
@@ -426,7 +433,6 @@ function E.run(r,initial_item,dir)
       if released and count>0 then
         edit('Change velocity',function(notes) for _,n in ipairs(notes) do if n.selected then n.vel=S.velocity end end end)
       end
-      if audition.available then _,S.preview=ui:switch('Preview notes',S.preview) end
       -- The cheat sheet only where it fits; Options > Shortcuts and help has it too.
       local _,room=ImGui.GetContentRegionAvail(ctx)
       if room>=ui:key_hints_height(SHORTCUTS)+ui:line_height()+3*ui.space.sm then
@@ -543,7 +549,20 @@ function E.run(r,initial_item,dir)
     -- A panel like the others: rounded, the header rows on the panel colour.
     ImGui.DrawList_AddRectFilled(dl,x,y,x+w,y+h,C.bg,6)
     ImGui.DrawList_AddRectFilled(dl,x,y,x+w,A.gy,C.panel,6,ImGui.DrawFlags_RoundCornersTop)
-    text(x+9,A.ry+5,C.faint,'NOTE')
+    local phones={x1=x+16,y1=A.ry+3,x2=A.gx-16,y2=A.gy-3}
+    local over_phones=audition.available and inside(mx,my,x,A.ry,A.gx,A.gy)
+    if audition.available then
+      ImGui.DrawList_AddRectFilled(dl,phones.x1,phones.y1,phones.x2,phones.y2,
+        S.preview and ui.alpha(C.accent,0x30) or over_phones and C.hover or C.raised,4)
+      ImGui.DrawList_AddRect(dl,phones.x1,phones.y1,phones.x2,phones.y2,S.preview and ui.alpha(C.accent,0x90) or C.line,4)
+      -- Headphones: a band over two ear cups.
+      local ink=S.preview and C.accent_text or C.muted
+      local cx,cy=(phones.x1+phones.x2)/2,(phones.y1+phones.y2)/2+2
+      ImGui.DrawList_PathArcTo(dl,cx,cy,6,math.pi,2*math.pi); ImGui.DrawList_PathStroke(dl,ink,0,1.5)
+      ImGui.DrawList_AddRectFilled(dl,cx-8,cy,cx-4,cy+5,ink,1.5)
+      ImGui.DrawList_AddRectFilled(dl,cx+4,cy,cx+8,cy+5,ink,1.5)
+      ui:anchor('preview',phones.x1,phones.y1,phones.x2,phones.y2)
+    else text(x+9,A.ry+5,C.faint,'NOTE') end
     ui:anchor('ruler',A.gx,A.ry,x+w,A.gy); ui:anchor('notes',A.gx,A.gy,x+w,A.gy+A.gh)
     ImGui.DrawList_PushClipRect(dl,x,A.gy,x+w,A.gy+A.gh,true)
     if S.pitchTrack~=B.track or S.pitchChannel~=S.channel or S.pitchPoll~=S.lastPoll then
@@ -552,8 +571,10 @@ function E.run(r,initial_item,dir)
     for j=first_row,last_row do
       local p=S.rows[j]; local yy=py(p); local black=black_keys[p%12]
       local background=black and C.row_black or C.row_white
+      local lit=audition:sounding(p)
       rect(A.gx,yy,x+w,yy+S.rowh,background)
-      rect(x,yy,A.gx-1,yy+S.rowh,black and C.key_black or C.key_white)
+      if lit then rect(A.gx,yy,x+w,yy+S.rowh,ui.alpha(C.accent,0x28)) end
+      rect(x,yy,A.gx-1,yy+S.rowh,lit and C.accent or black and C.key_black or C.key_white)
       line(x,yy+S.rowh-1,x+w,yy+S.rowh-1,C.row_line)
       if S.rowh>=13 then
         local name=S.pitchNames[p]
@@ -566,7 +587,7 @@ function E.run(r,initial_item,dir)
           S.pitchNames[p]=name
         end
         ImGui.DrawList_PushClipRect(dl,x+5,yy,A.gx-3,yy+S.rowh,true)
-        text(x+8,yy+math.max(0,(S.rowh-14)/2),C.text,name)
+        text(x+8,yy+math.max(0,(S.rowh-14)/2),lit and C.on_accent or C.text,name)
         ImGui.DrawList_PopClipRect(dl)
       end
     end
@@ -710,6 +731,9 @@ function E.run(r,initial_item,dir)
         ImGui.SetTooltip(ctx,B.clips[n.take_index].track_name..' · '..M.pitch_name(n.pitch)..' · Velocity '..n.vel..
           (#candidates>1 and '\nOverlapping notes: click a colored part, or right-click to pick by name.' or ''))
       end
+      if hint_hovered and over_phones then
+        ImGui.SetTooltip(ctx,'Preview: hear notes as you select, add or move them, and when you click a key.')
+      end
       if hint_hovered and (ghost_hit or ghost_velocity_hit) then ImGui.SetTooltip(ctx,'Repeat — read-only. Edit the note or velocity in the first pass.') end
       local wheel,horizontal=ImGui.GetMouseWheel(ctx)
       if wheel~=0 then
@@ -738,6 +762,9 @@ function E.run(r,initial_item,dir)
         S.follow=false
         local q=math.max(0,tq(mx)); local p=pitch(my)
         if my>=overview_y then S.drag={kind='overview'}
+        elseif over_phones then
+          S.preview=not S.preview; if not S.preview then stop_preview() end
+          S.status=S.preview and 'Preview on - selecting notes plays them.' or 'Preview off.'
         elseif loop_strip then
           local b=B.clips[loop_strip]
           local ok,message=B:unroll(L,loop_strip,S.matchLoop)
@@ -829,10 +856,16 @@ function E.run(r,initial_item,dir)
       elseif d.kind=='select' then
         local q1,q2=math.min(d.q,tq(mx)),math.max(d.q,tq(mx))
         local y1,y2=math.min(d.my,my),math.max(d.my,my)
+        local fresh
+        d.played=d.played or {}
         for i,n in ipairs(S.notes) do
           local ny,ey=vertical(n); local a,z=edges(n)
           n.selected=(d.add and d.before[i].selected) or (ny~=nil and a<q2 and z>q1 and ny<y2 and ey>y1)
+          if n.selected and not d.before[i].selected and not d.played[i] then
+            d.played[i]=true; fresh=fresh or {}; fresh[#fresh+1]=n
+          end
         end
+        if fresh then preview(nil,fresh) end
         d.moved=d.moved or math.abs(mx-d.mx)>=4 or math.abs(my-d.my)>=4
         S.range=M.selection_range(d.q,tq(mx),S.snap and grid() or 0,d.moved)
       elseif d.kind=='draw' and in_grid then
