@@ -349,9 +349,9 @@ function E.run(r,initial_item,dir)
     if not S.lengthEdit or S.lengthEdit.item~=b.item then
       S.lengthEdit={item=b.item,text=L.format(value)}; S.lengthEditing=false; S.lengthError=nil
     elseif not S.lengthEditing then S.lengthEdit.text=L.format(value) end
-    local function apply(bars,duplicate)
+    local function apply(length,duplicate)
       local showWholeGroup=S.start<=.25 and S.start+S.span>=(B.view_length or B.length)
-      local ok,message=B:resize_phrase(L,bars,S.matchLoop,duplicate)
+      local ok,message=B:resize_phrase(L,length,S.matchLoop,duplicate)
       if ok then
         S.notes=M.copy(B.notes or {}); rows(); S.range=nil
         if showWholeGroup then S.start=0; S.span=math.max(1,(B.view_length or B.length)+.5) end
