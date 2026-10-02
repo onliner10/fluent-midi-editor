@@ -1,6 +1,10 @@
 -- Several REAPER takes on one shared project-beat timeline.
 -- All affected clips are checked before writing and share a single Undo step.
 local G={}
+-- An error for the user (a locked clip, a length below one tick): shown
+-- without the traceback that unexpected errors carry.
+local function refuse(message) error({message=message},0) end
+local function trace(err) return type(err)=='table' and err or debug.traceback(err) end
 function G.new(r,M,backend,repetitions,phrase)
   local self={clips={},active=1,notes={},ghosts={},length=16,origin=0}
   local repeats=repetitions and repetitions.new(r)
@@ -144,7 +148,7 @@ function G.new(r,M,backend,repetitions,phrase)
       for _,b in ipairs(self.clips) do b.take=r.GetActiveTake(b.item) end
       self:read()
       if match_loop then r.GetSet_LoopTimeRange2(self.project,true,true,self.position,r.TimeMap2_QNToTime(self.project,self.origin+self.length),false) end
-    end,debug.traceback)
+    end,trace)
     local restored=true
     if not ok then
       restored=repeats:restore(self.project,saved)
@@ -154,6 +158,7 @@ function G.new(r,M,backend,repetitions,phrase)
     r.PreventUIRefresh(-1); r.Undo_EndBlock2(self.project,'Fluent MIDI Editor: '..label,-1); r.UpdateArrange()
     for _,b in ipairs(self.clips) do b.take=r.GetActiveTake(b.item) end
     self:read()
+    if not ok and type(err)=='table' then return false,restored and err.message or err.message..' Use Undo.' end
     if not ok then return false,(restored and 'Clips restored. ' or 'Use Undo. ')..tostring(err) end
     return true
   end
@@ -168,13 +173,14 @@ function G.new(r,M,backend,repetitions,phrase)
         -- Applying the displayed source length can still trim a longer native
         -- looped item. Explicit length edits follow the current phrase group.
         if math.abs(current-bars)<1e-8 and (not b.looped or math.abs(length_module.bars(r,b)-bars)<1e-8) then return end
-        local native=b.looped
+        local native=b.looped and not b.single
         phrase.resize(r,b,bars,length_module)
         if native then
           repeats:set_enabled(self.project,b.item,items,true)
         end
       else
-        local ok,message=length_module.resize(r,b,bars,false,true,phrase,duplicate); assert(ok,message)
+        local ok,message=length_module.resize(r,b,bars,false,true,phrase,duplicate)
+        if not ok then refuse(message) end
       end
     end,match_loop)
   end
@@ -193,7 +199,7 @@ function G.new(r,M,backend,repetitions,phrase)
   function self:set_repeating(enabled,match_loop)
     return self:phrase_transaction(enabled and 'Turn on phrase repeat' or 'Turn off phrase repeat',function(items)
       local b=self.clips[self.active]
-      if enabled and b.looped and not b.can_extend then error('This clip already loops its MIDI source. Use Glue in REAPER first.') end
+      if enabled and b.looped and not b.can_extend then refuse('This clip already loops its MIDI source. Use Glue in REAPER first.') end
       repeats:set_enabled(self.project,b.item,items,enabled)
     end,match_loop)
   end
@@ -260,7 +266,7 @@ function G.new(r,M,backend,repetitions,phrase)
         assert(done,message)
       end
       if repeats then repeats:sync(self.project,items) end
-    end,debug.traceback)
+    end,trace)
     local restored=true
     if not ok then
       if effect and effect.rollback then local restored_effect=pcall(effect.rollback); if not restored_effect then restored=false end end
@@ -273,6 +279,7 @@ function G.new(r,M,backend,repetitions,phrase)
     -- SetItemStateChunk/Undo can replace take pointers; reacquire each one.
     for _,b in ipairs(self.clips) do b.take=r.GetActiveTake(b.item) end
     self:read()
+    if not ok and type(err)=='table' then return false,restored and err.message or err.message..' Use Undo.' end
     if not ok then return false,(restored and 'Clips restored. ' or 'Use Undo. ')..tostring(err) end
     return true
   end

@@ -16,7 +16,9 @@ function T.reset()
   r.SelectAllMediaItems(0,false)
   for i=r.CountTracks(0)-1,0,-1 do r.DeleteTrack(r.GetTrack(0,i)) end
   for i=r.CountTempoTimeSigMarkers(0)-1,0,-1 do r.DeleteTempoTimeSigMarker(0,i) end
-  r.SetCurrentBPM(0,120,false)
+  -- Deleting a marker at 0 leaves its meter as the project's; reset it to 4/4.
+  r.SetTempoTimeSigMarker(0,-1,0,-1,-1,120,4,4,false); r.DeleteTempoTimeSigMarker(0,0)
+  r.SetCurrentBPM(0,120,false); r.UpdateTimeline()
   r.SetEditCurPos(0,false,false)
   r.Undo_OnStateChange('Test: reset')
 end

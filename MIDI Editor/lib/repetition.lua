@@ -2,6 +2,8 @@
 -- Ownership lives in item extstate, so playback, save/reload and native Undo
 -- work without this editor running. Only explicitly enabled phrases get copies.
 local R={}
+-- An error for the user; transactions show it without a traceback.
+local function refuse(message) error({message=message},0) end
 function R.new(r)
   local self={}
   -- Keys keep the 'LiveMIDI' prefix of earlier builds so their repeats stay recognised.
@@ -78,12 +80,12 @@ function R.new(r)
     return ok
   end
   function self:set_enabled(project,owner,members,enabled)
-    if r.GetMediaItemInfo_Value(owner,'C_LOCK')&1~=0 then error('The phrase is locked.') end
+    if r.GetMediaItemInfo_Value(owner,'C_LOCK')&1~=0 then refuse('The phrase is locked.') end
     if enabled then
       set(owner,MEMBERS,member_ids(members))
     else
       for _,item in ipairs(self:copies(project,owner)) do
-        if r.GetMediaItemInfo_Value(item,'C_LOCK')&1~=0 then error('A repeat is locked in REAPER.') end
+        if r.GetMediaItemInfo_Value(item,'C_LOCK')&1~=0 then refuse('A repeat is locked in REAPER.') end
         assert(r.DeleteTrackMediaItem(r.GetMediaItem_Track(item),item),'Could not delete a repeat')
       end
       set(owner,MEMBERS,'')
@@ -117,14 +119,14 @@ function R.new(r)
         end end
         local targetqn=r.TimeMap2_timeToQN(project,target)
         local count=math.max(0,math.ceil((targetqn-startqn)/period-1e-8)-1)
-        assert(count<=256,'Too many repeats. Lengthen the phrase (256 repeats max).')
+        if count>256 then refuse('Too many repeats. Lengthen the phrase (256 repeats max).') end
         local copies=self:copies(project,owner)
-        for _,copy in ipairs(copies) do assert(r.GetMediaItemInfo_Value(copy,'C_LOCK')&1==0,'A repeat is locked in REAPER.') end
+        for _,copy in ipairs(copies) do if r.GetMediaItemInfo_Value(copy,'C_LOCK')&1~=0 then refuse('A repeat is locked in REAPER.') end end
         local ok,chunk=r.GetItemStateChunk(owner,'',false); assert(ok,'Could not read the phrase')
-        assert(chunk:find('POOLEDEVTS%s+%b{}'),'This MIDI source does not support shared repeats.')
+        if not chunk:find('POOLEDEVTS%s+%b{}') then refuse('This MIDI source does not support shared repeats.') end
         local legacy=get(owner,LEGACY_SPAN)~=''
         local rebind=self:context_changed(owner,changed)
-        if legacy or rebind then assert(r.GetMediaItemInfo_Value(owner,'C_LOCK')&1==0,'The phrase is locked.') end
+        if (legacy or rebind) and r.GetMediaItemInfo_Value(owner,'C_LOCK')&1~=0 then refuse('The phrase is locked.') end
         plans[#plans+1]={owner=owner,track=track,startqn=startqn,period=period,targetqn=targetqn,count=count,copies=copies,chunk=chunk,legacy=legacy,rebind=rebind}
       end
     end

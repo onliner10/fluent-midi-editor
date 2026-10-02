@@ -97,13 +97,18 @@ eq(messages[1].msg,cc); eq(messages[1].flags,0x50); eq(messages[2].msg,shape)
 local partial=M.decode(P.materialize(decoded,60,540))
 eq(#partial.notes,2); eq(partial.notes[1].s,0); eq(partial.notes[1].e,60)
 eq(partial.notes[2].s,420); eq(partial.notes[2].e,480)
--- Re-extension first restores hidden source notes byte-for-byte; only newly
--- added time beyond the retained source is filled with the current phrase.
-eq(P.extend(decoded,0,240,240),decoded.raw)
-eq(P.extend(decoded,0,240,480),decoded.raw)
-local extended=M.decode(P.extend(decoded,0,240,960))
-eq(#extended.notes,3); eq(extended.notes[2].s,480); eq(extended.notes[3].s,720)
+-- Lengthening a repeating phrase fills the new time with its repeats: what
+-- played past the old end, not notes the source hid there.
+local extended=M.decode(P.duplicate(decoded,0,240,960))
+eq(#extended.notes,4); eq(extended.notes[2].s,240); eq(extended.notes[4].s,720); eq(extended.end_ppq,960)
 eq(extended.notes[1].off.msg,decoded.notes[1].off.msg)
+local hidden=M.decode(evt(0,0,0x90,60,100)..evt(120,0,0x80,60,0)..evt(180,0,0x90,64,100)
+  ..evt(60,0,0x80,64,0)..evt(600,0,0xB0,123,0))
+extended=M.decode(P.duplicate(hidden,0,240,480))
+eq(#extended.notes,2,'the repeat replaces the hidden note'); eq(extended.notes[2].pitch,60); eq(extended.notes[2].s,240)
+extended=M.decode(P.duplicate(hidden,0,240,300))
+eq(#extended.notes,3); eq(extended.notes[2].e,300,'the last repeat ends with the phrase')
+eq(extended.notes[3].pitch,64,'hidden past the new end stays'); eq(extended.notes[3].s,300)
 notes=M.copy(decoded.notes); notes[1].id=nil; notes[1].s=.75; notes[1].e=1
 result=M.decode(M.encode(decoded,notes,function(q) return q*960 end,960))
 eq(#result.notes,1); eq(result.notes[1].s,720); eq(result.end_ppq,960)

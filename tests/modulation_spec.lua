@@ -43,7 +43,7 @@ close(A.value(step,1),.8); close(A.value(step,1.24),.8); close(A.value(step,1.25
 for i=0,99 do close(A.value(step,i/100),A.value(got,i/100),'step changed the preceding curve') end
 for i=125,400 do close(A.value(step,i/100),A.value(got,i/100),'step changed the following curve') end
 check(#A.read(M.decode(A.write(result,{{channel=0,cc=20,deleted=true}},to,960)),from)==1,'delete only this lane')
-local extended=M.decode(P.extend(result,0,960,1920),from); local _,extensions=A.read(extended,from)
+local extended=M.decode(P.duplicate(result,0,960,1920),from); local _,extensions=A.read(extended,from)
 check(#extensions['0:20'].points==6,'phrase extension retains knots')
 local malformed=e(0,A.prefix..'P|0|20|nan|0|0|0')
 local parsed=A.read(M.decode(A.pack({malformed,e(20,string.char(0xB0,123,0))})))

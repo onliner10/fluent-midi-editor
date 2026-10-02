@@ -1,0 +1,21 @@
+-- A length that cannot be applied leaves the clip as it was and says why in
+-- one plain sentence; the status line has no room for a stack traceback.
+local T=dofile(ROOT..'/tests/reaper/support.lua')
+local r=reaper
+T.reset()
+local item=T.midi_item(0,8,{{60,0,1}},'Keys')
+local S=T.session(item); local L=T.load('length')
+local ok,message=S:resize_phrase(L,1e-6,false)
+T.eq(ok,false,'a length under one tick'); T.eq(message,'The clip must be at least one MIDI tick long.','message')
+r.SetMediaItemInfo_Value(item,'C_LOCK',1); r.Undo_OnStateChange('Test: lock clip'); S:read()
+ok,message=S:resize_phrase(L,1,false)
+T.eq(ok,false,'a locked clip'); T.eq(message,'The clip is locked.','message')
+T.eq(r.TimeMap2_timeToQN(0,r.GetMediaItemInfo_Value(item,'D_LENGTH')),8,'clip length')
+local repeating=T.midi_item(0,4,{{60,0,1}},'Call'); T.midi_item(0,16,{},'Response')
+S=T.session(repeating,r.GetTrackMediaItem(r.GetTrack(0,2),0))
+T.ok(S:set_repeating(true,false))
+r.SetMediaItemInfo_Value(r.GetTrackMediaItem(r.GetTrack(0,1),1),'C_LOCK',1); r.Undo_OnStateChange('Test: lock repeat'); S:read()
+ok,message=S:resize_phrase(L,0.5,false)
+T.eq(ok,false,'a locked repeat'); T.eq(message,'A repeat is locked in REAPER.','message')
+T.eq(r.TimeMap2_timeToQN(0,r.GetMediaItemInfo_Value(repeating,'D_LENGTH')),4,'phrase length')
+print('a refused length says why in one sentence')

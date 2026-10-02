@@ -66,8 +66,8 @@ Other open phrases keep their length.
 Turn on **Repeat phrase** on a shorter clip to make it play until the end of the longest
 clip in the current group. Existing REAPER repeats (Loop source) are
 detected automatically. REAPER turns Loop source on for every new MIDI clip; a clip
-that plays one pass of its source is a regular clip, and its loop follows the
-clip length when the length changes. A new clip that is still empty and was stretched
+that plays one pass of its source is a regular clip, also when its start was trimmed
+in the arrange view, and its loop follows the clip length when the length changes. A new clip that is still empty and was stretched
 in the arrange view is a regular clip too: a 1-bar clip stretched to 2 bars opens as 2
 editable bars, and the first note written into it lengthens its source.
 Opening the editor alone changes neither clips nor MIDI.
@@ -93,9 +93,10 @@ Opening such a copy in Fluent MIDI Editor takes you to its original.
 Shortening or lengthening the phrase rebuilds the copies; **Ctrl+D** duplicates the edited
 notes and may lengthen the original, reducing the number of automatic repeats accordingly.
 
-With repeat on, lengthening the phrase pulls the next repeats into editing.
-Without repeat, lengthening adds empty space. Shortening hides notes past the end but keeps
-them in the MIDI source — they reappear when you lengthen it again. Editing visible notes
+With repeat on, lengthening the phrase pulls the next repeats into editing: the phrase
+holds what played there. Without repeat, lengthening adds empty space. Shortening hides
+notes past the end but keeps them in the MIDI source — without repeat, they reappear when
+you lengthen it again. Editing visible notes
 does not delete the hidden part and does not automatically restore the previous length.
 Use **Ctrl+D** to duplicate content.
 

@@ -1,6 +1,8 @@
 -- Turn audible loop occurrences into one editable phrase. No render/Glue action
 -- and no selection changes: only the active take's MIDI source is replaced.
 local P={}
+-- An error for the user: transactions show its message without a traceback.
+local function refuse(message) error({message=message},0) end
 local function terminal(event)
   return #event.msg==0 or (#event.msg==3 and event.msg:byte(1)&0xF0==0xB0 and event.msg:byte(2)==123)
 end
@@ -42,19 +44,6 @@ function P.materialize(source,start,finish)
   local events=occurrences(source,0,source.end_ppq,start,finish)
   for _,event in ipairs(events) do event.pos=event.pos-start end
   return pack(events,finish-start)
-end
-function P.extend(source,pattern_start,pattern_end,ending)
-  if ending<=source.end_ppq+1e-7 then return source.raw end
-  local events={}
-  for i,event in ipairs(source.events) do
-    if not (i==#source.events and terminal(event)) then
-      events[#events+1]={pos=event.pos,flags=event.flags,msg=event.msg,order=#events+1}
-    end
-  end
-  for _,event in ipairs(occurrences(source,pattern_start,pattern_end,source.end_ppq,ending)) do
-    event.order=#events+1; events[#events+1]=event
-  end
-  return pack(events,ending)
 end
 -- Copies of [a,z) from a up to finish, like Ctrl+D on the whole clip. The
 -- rest of the source stays; whatever was hidden in [z,finish) is replaced.
@@ -100,20 +89,22 @@ function P.resize(r,b,bars,L)
   local target=L.end_qn(r,b,bars)
   local start=r.MIDI_GetPPQPosFromProjQN(b.take,b.item_start)
   local finish=r.MIDI_GetPPQPosFromProjQN(b.take,target)
-  assert(finish-start>=1,'The phrase must be at least one MIDI tick long')
-  assert(r.GetMediaItemInfo_Value(b.item,'C_LOCK')&1==0,'The clip is locked.')
+  if finish-start<1 then refuse('The phrase must be at least one MIDI tick long.') end
+  if r.GetMediaItemInfo_Value(b.item,'C_LOCK')&1~=0 then refuse('The clip is locked.') end
   local raw
-  if b.looped then
+  if b.looped and not b.single then
     -- Retain a full original cycle when shortening, so hidden notes can return.
     raw=P.materialize(b.source,start,math.max(finish,start+b.source.end_ppq))
     P.detach(r,b)
     assert(r.SetMediaItemTakeInfo_Value(b.take,'D_STARTOFFS',0),'Could not set the phrase start')
     assert(r.SetMediaItemInfo_Value(b.item,'B_LOOPSRC',0),'Could not set the phrase')
   else
-    raw=P.extend(b.source,start,r.MIDI_GetPPQPosFromProjQN(b.take,b.item_end),finish)
+    -- What plays past the phrase end is its repeats, so lengthening pulls in
+    -- copies of the phrase, not notes hidden in the source by a shortening.
+    local ending=r.MIDI_GetPPQPosFromProjQN(b.take,b.item_end)
+    if finish>ending+1e-7 then raw=P.duplicate(b.source,start,ending,finish) end
   end
-  assert(r.MIDI_SetAllEvts(b.take,raw),'Could not write the phrase')
-  r.MIDI_Sort(b.take)
+  if raw then assert(r.MIDI_SetAllEvts(b.take,raw),'Could not write the phrase'); r.MIDI_Sort(b.take) end
   assert(r.SetMediaItemInfo_Value(b.item,'D_LENGTH',r.TimeMap2_QNToTime(b.project,target)-b.position),'Could not set the phrase length')
   r.UpdateItemInProject(b.item)
   b:read()
