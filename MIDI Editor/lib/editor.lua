@@ -298,7 +298,7 @@ function E.run(r,initial_item,dir)
     local points=M.copy(X.envelope(n,h.dim,note_tick(n)))
     if h.point>1 then table.remove(points,h.point) else points[1].v=X.NEUTRAL[h.dim] end
     S.exprPoint=nil
-    write_expression({[h.note]=points},h.dim,'Delete '..({pb='pitch bend',tb='slide',at='pressure'})[h.dim]..' point')
+    write_expression({[h.note]=points},h.dim,'Delete '..X.NAMES[h.dim]..' point')
   end
   -- Simplify: dense recordings become a few smooth points, easy to edit.
   local function simplify_expression(only)
@@ -330,9 +330,11 @@ function E.run(r,initial_item,dir)
     local notes,part=M.copy(S.notes),{}
     for _,n in ipairs(notes) do if n.take_index==B.active then part[#part+1]=n end end
     if #part==0 then S.status='Add notes to the clip first.'; return end
-    local done,why=X.make_mpe(part)
-    if not done then S.status=why; return end
-    if commit(notes,'Convert clip to MPE') then
+    local done,info=X.make_mpe(part)
+    if not done then S.status=info; return end
+    -- The part's own bend, pressure and CCs go to the master channel.
+    local raw=X.to_master(b.source,info)
+    if commit(notes,'Convert clip to MPE',nil,raw and {[B.active]={raw=raw}} or nil) then
       S.channel=1
       S.status=b.track_name..': one channel per note (2-16). Set the instrument to MPE mode.'
     end
@@ -734,17 +736,19 @@ function E.run(r,initial_item,dir)
     -- the candidates are not selected yet; grabbing one selects it.
     local function probe(dimension,ymap,candidates,select)
       local best,dist,segment
+      -- Low rows leave room to grab the note above and below its pitch line.
+      local band=dimension=='pb' and math.min(4,S.rowh/5) or 4
       for _,i in ipairs(candidates) do local n=S.notes[i]
         local points=envelope(i,n,dimension)
         for k,p in ipairs(points) do
           local yy=ymap(n,p.v)
           local dd=yy and math.abs(tx(n.s+p.t)-mx)+math.abs(yy-my)
-          if dd and dd<8 and (not dist or dd<dist) then best,dist={note=i,dim=dimension,point=k,select=select},dd end
+          if dd and dd<8 and (not dist or dd<dist) then best,dist={note=i,dim=dimension,point=k,select=select,d=dd},dd end
         end
         local t=tq(mx)-n.s
         if not segment and t>=0 and t<=n.e-n.s then
           local v=X.value(points,t); local yy=ymap(n,v)
-          if yy and math.abs(yy-my)<4 then segment={note=i,dim=dimension,t=t,v=v,select=select} end
+          if yy and math.abs(yy-my)<band then segment={note=i,dim=dimension,t=t,v=v,select=select,flat=X.flat(points,dimension)} end
         end
       end
       return best or segment
@@ -779,6 +783,16 @@ function E.run(r,initial_item,dir)
         end
       end
     end
+    -- Note gestures keep their place on the notes: an edge still resizes
+    -- (except right on a point), Alt still sets velocity and Ctrl still
+    -- copies on a flat line, and another note's body is not taken over by a
+    -- line crossing it.
+    if expr_hit and expr_hit.dim=='pb' and hit then
+      local edge=grabbed_edge(S.notes[hit])
+      if edge and not (expr_hit.point and expr_hit.d<5) then expr_hit=nil
+      elseif not expr_hit.point and (alt or ctrl and expr_hit.flat) then expr_hit=nil
+      elseif expr_hit.select and hit~=expr_hit.note then expr_hit=nil end
+    end
     local function draw_envelope(n,points,ymap,color,handles,width)
       local px,py
       local function to(t,v)
@@ -811,13 +825,10 @@ function E.run(r,initial_item,dir)
       return tx(n.s+p.t),h.dim=='pb' and pitch_y(n,p.v) or lane_y(p.v),p.v
     end
     -- Freehand drawing replaces the envelope over the drawn time span.
-    local function drawn(original,n,samples,value,maximum)
-      local length=n.e-n.s; local inner={}
-      for _,sample in ipairs(samples) do local t=sample.q-n.s
-        if t>=0 and t<=length then inner[#inner+1]={t=t,v=M.clamp(value(sample.y),0,maximum)} end
-      end
+    -- inner: the drawn points inside the note, sorted by time.
+    local function drawn(original,n,inner)
+      local length=n.e-n.s
       if #inner==0 then return nil end
-      table.sort(inner,function(a,b) return a.t<b.t end)
       local a,z=inner[1].t,inner[#inner].t
       local out={}
       for _,p in ipairs(original) do if p.t<a-1e-9 then out[#out+1]={t=p.t,v=p.v} end end
@@ -1109,7 +1120,11 @@ function E.run(r,initial_item,dir)
         if grabbed_edge(S.notes[hit]) then ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_ResizeEW) end
       elseif S.draw and in_grid then ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_Hand) end
       if ImGui.IsMouseClicked(ctx,1) then
-        if expr_hit then S.exprMenu=expr_hit; ImGui.OpenPopup(ctx,'expr_menu')
+        if expr_hit and (expr_hit.point or expr_hit.dim~='pb') then
+          -- The menu acts on the note it was opened on.
+          local n=S.notes[expr_hit.note]
+          if not n.selected then if not shift then deselect() end; n.selected=true; B:set_active(n.take_index); S.range=nil end
+          S.exprMenu=expr_hit; ImGui.OpenPopup(ctx,'expr_menu')
         elseif in_grid then
           local before=M.copy(S.notes); if not shift then deselect() end
           S.drag={kind='select',mx=mx,my=my,q=tq(mx),p=pitch(my),before=before,add=shift,right=true,candidates=candidates,hit=hit}
@@ -1173,12 +1188,12 @@ function E.run(r,initial_item,dir)
           else
             for _,i in ipairs(expr_notes) do targets[#targets+1]=i end
           end
-          if #targets>0 then S.drag={kind='expr_draw',dim=in_grid and 'pb' or expr_lane,targets=targets,samples={},preview={}}
+          if #targets>0 then S.drag={kind='expr_draw',dim=in_grid and 'pb' or expr_lane,targets=targets,preview={}}
           else S.status='Select MPE notes, then draw their '..(in_grid and 'pitch' or lane_name:lower())..'.' end
         elseif in_vel and expr_lane then
           -- A click on a note's line selects that note.
           local best,dist
-          for i,n in ipairs(S.notes) do if q>=n.s and q<=n.e then
+          for i,n in ipairs(S.notes) do if q>=n.s and q<=n.e and n.initial then
             local dd=math.abs(lane_y(X.value(envelope(i,n,expr_lane),q-n.s))-my)
             if dd<8 and (not dist or dd<dist) then best,dist=i,dd end
           end end
@@ -1314,7 +1329,6 @@ function E.run(r,initial_item,dir)
           local scale=d.dim=='pb' and 8192/(S.bendRange*S.rowh) or 127/(A.vh-10)
           local dv=(d.my-my)*scale
           if d.dim=='pb' and alt then dv=semitone_value(math.floor(semitones(8192+dv)+.5))-8192 end
-          d.dv=dv
           for i,points in pairs(d.base) do
             local moved={}
             for k,p in ipairs(points) do moved[k]={t=p.t,v=M.clamp(p.v+dv,0,X.MAX[d.dim])} end
@@ -1322,10 +1336,12 @@ function E.run(r,initial_item,dir)
           end
         end
       elseif d.kind=='expr_draw' then
-        if d.lastX~=mx or d.lastY~=my then
+        -- A sample per 2 px; only the notes it falls on are rebuilt.
+        if not d.lastX or math.abs(mx-d.lastX)>=2 or math.abs(my-d.lastY)>=2 then
           d.lastX,d.lastY=mx,my
-          d.samples[#d.samples+1]={q=tq(mx),y=my}
+          local sample={q=tq(mx),y=my}
           for _,i in ipairs(d.targets) do local n=S.notes[i]
+            if sample.q>=n.s and sample.q<=n.e then
             local value
             if d.dim=='pb' then
               value=function(yy)
@@ -1334,7 +1350,12 @@ function E.run(r,initial_item,dir)
                 return alt and 8192+math.floor(semitones(v)+.5)/S.bendRange*8192 or v
               end
             else value=function(yy) return (A.bottom-4-yy)/(A.vh-10)*127 end end
-            d.preview[i]=drawn(X.envelope(n,d.dim,note_tick(n)),n,d.samples,value,X.MAX[d.dim])
+            d.inner=d.inner or {}; d.inner[i]=d.inner[i] or {}
+            local inner,t=d.inner[i],sample.q-n.s
+            local k=#inner+1; while k>1 and inner[k-1].t>t do k=k-1 end
+            table.insert(inner,k,{t=t,v=M.clamp(value(sample.y),0,X.MAX[d.dim])})
+            d.preview[i]=drawn(X.envelope(n,d.dim,note_tick(n)),n,inner)
+            end
           end
         end
       elseif d.kind=='velocity_draw' and in_vel then
@@ -1413,10 +1434,10 @@ function E.run(r,initial_item,dir)
           end
         elseif d.kind=='expr_offset' then
           local changes; for i,points in pairs(d.preview) do changes=changes or {}; changes[i]=points end
-          if changes then write_expression(changes,d.dim,'Move '..({pb='pitch bend',tb='slide',at='pressure'})[d.dim]) end
+          if changes then write_expression(changes,d.dim,'Move '..X.NAMES[d.dim]) end
         elseif d.kind=='expr_draw' then
           local changes; for i,points in pairs(d.preview) do changes=changes or {}; changes[i]=points end
-          if changes then write_expression(changes,d.dim,'Draw '..({pb='pitch bend',tb='slide',at='pressure'})[d.dim]) end
+          if changes then write_expression(changes,d.dim,'Draw '..X.NAMES[d.dim]) end
         end
         if d.changed then commit(S.notes,({draw='Draw notes',add='Add / delete note',move='Move notes',left='Change note start',right='Change note length',velocity='Change velocity',velocity_draw='Draw velocity'})[d.kind] or 'Edit notes') end
       end
@@ -1438,7 +1459,7 @@ function E.run(r,initial_item,dir)
     if ImGui.BeginPopup(ctx,'expr_menu') then
       local h=S.exprMenu; local n=h and S.notes[h.note]
       if n then
-        local name=({pb='pitch bend',tb='slide',at='pressure'})[h.dim]
+        local name=X.NAMES[h.dim]
         if h.point and ImGui.MenuItem(ctx,h.point>1 and 'Delete point' or 'Reset starting value','Delete') then delete_point(h) end
         if ImGui.MenuItem(ctx,'Simplify '..name..' of selected notes') then simplify_expression(h.dim) end
         if ImGui.MenuItem(ctx,'Clear '..name) then write_expression({[h.note]={{t=0,v=X.NEUTRAL[h.dim]}}},h.dim,'Clear '..name) end

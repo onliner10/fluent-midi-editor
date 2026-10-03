@@ -395,13 +395,18 @@ local function retarget(msg,n)
   end
   return msg
 end
+-- A clip is written as MPE when it was read as MPE, or when a note carries a
+-- starting state: copies of MPE notes, and notes converted to MPE.
+function M.is_mpe(source,notes)
+  if source.mpe then return true end
+  for _,n in ipairs(notes) do if n.initial then return true end end
+  return false
+end
 function M.encode(source,notes,to_ppq,end_ppq)
   to_ppq=to_ppq or function(x) return x end
   local changed,out,originals={}, {}, {}
   for _,old in ipairs(source.notes) do originals[old.id]=old end
-  local mpe=source.mpe
-  -- Notes with a starting state are MPE notes: copies, and notes converted to MPE.
-  for _,n in ipairs(notes) do if n.initial then mpe=true end end
+  local mpe=M.is_mpe(source,notes)
   local shared_channels=source.shared or {}
   if mpe then M.allocate_channels(notes,originals,shared_channels) end
   notes=M.resolve_overlaps(notes,originals)

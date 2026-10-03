@@ -253,9 +253,11 @@ can be grabbed directly: that selects its note.
 smooth points that are easy to reshape, staying within about a quarter of a
 semitone (or 6 of 127) of what was played.
 
-A selected note's flat pitch line runs through its middle: to move the note,
-grab it above or below the line. Each finished gesture and each nudge is one
-Undo step.
+A selected note's flat pitch line runs through its middle. Note gestures keep
+working there: its edges still resize the note, Alt + drag still sets velocity,
+Ctrl + drag on a flat line still copies the note, and right-clicking the line
+opens the note menu. To move the note, grab it above or below the line. Each
+finished gesture and each nudge is one Undo step.
 
 The editor shows the MIDI as breakpoints: a value that holds and then jumps is
 two points, a recorded or drawn slope is a line. Lines are written as small
@@ -266,8 +268,8 @@ recorded; it is only rewritten for an envelope you edit.
 **A clip that is not MPE** (all notes on one channel) can be converted with
 **Convert to MPE** in the sidebar. Each sounding note gets its own channel
 (2-16, the lower MPE zone; at most 15 notes at once), so each can bend on its
-own. Controllers on channel 1 stay there and act on the whole zone, as MPE
-defines. Switch the instrument to MPE mode afterwards.
+own. The part's own bend, pressure and CCs go to channel 1, the zone's master
+channel, where they keep acting on every note, as MPE defines. Switch the instrument to MPE mode afterwards.
 
 ## Cheat sheet
 

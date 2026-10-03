@@ -8,11 +8,12 @@ local X={}
 local M
 -- model: model.lua, for the MIDI message helpers.
 function X.new(model)
-  M=model
+  M=model; X.NEUTRAL=M.NEUTRAL
   return X
 end
 X.DIMENSIONS={'pb','tb','at'}
-X.NEUTRAL={pb=8192,at=0,tb=64}
+X.NEUTRAL=nil -- set by X.new from model.lua, which settles notes to the same values
+X.NAMES={pb='pitch bend',tb='slide',at='pressure'}
 X.MAX={pb=16383,at=127,tb=127}
 -- Value steps a written ramp takes, and how far a thinned envelope may stray
 -- from the MIDI it shows. The tolerance exceeds the step, so a ramp the
@@ -59,14 +60,32 @@ end
 -- tick, or steps within the tolerance) is a line. tick: one MIDI tick in
 -- quarter notes.
 local cache=setmetatable({},{__mode='k'})
+-- A note without expression holds one value: one shared envelope per value.
+local constant={}
+local function lookup(list,...)
+  local node=cache[list]
+  for i=1,select('#',...) do node=node and node[select(i,...)] end
+  return node
+end
+local function store(list,points,...)
+  cache[list]=cache[list] or {}
+  local node,count=cache[list],select('#',...)
+  for i=1,count-1 do local k=select(i,...); node[k]=node[k] or {}; node=node[k] end
+  node[select(count,...)]=points
+end
 function X.envelope(n,dimension,tick)
   tick=tick or 1/960
   local length=n.e-n.s
-  local key=dimension..':'..length..':'..tick..':'..tostring(n.initial and n.initial[dimension])
-  local list=n.expr or X
-  local cached=cache[list] and cache[list][key]
+  local start=n.initial and n.initial[dimension] or X.NEUTRAL[dimension]
+  if not n.expr then
+    local key=dimension..start
+    constant[key]=constant[key] or {{t=0,v=start}}
+    return constant[key]
+  end
+  local list=n.expr
+  local cached=lookup(list,dimension,length,tick,start)
   if cached then return cached end
-  local value=n.initial and n.initial[dimension] or X.NEUTRAL[dimension]
+  local value=start
   local raw,since={{t=0,v=value}},0
   for _,x in ipairs(n.expr or {}) do
     local d,_,v=M.expression(x.msg)
@@ -79,7 +98,7 @@ function X.envelope(n,dimension,tick)
   local points=thin(raw,TOLERANCE[dimension])
   -- The value after the last breakpoint holds to the end of the note.
   if #points>1 and points[#points].v==points[#points-1].v then points[#points]=nil end
-  cache[list]=cache[list] or {}; cache[list][key]=points
+  store(list,points,dimension,length,tick,start)
   return points
 end
 -- The envelope's value at time t (linear between breakpoints).
@@ -120,10 +139,11 @@ function X.write(n,dimension,points,tick)
   tick=tick or 1/960
   local last_time=math.max(0,length-tick)
   local sorted={}
-  for _,p in ipairs(points) do
-    sorted[#sorted+1]={t=M.clamp(p.t,0,last_time),v=math.floor(M.clamp(p.v,0,X.MAX[dimension])+.5)}
+  for i,p in ipairs(points) do
+    sorted[#sorted+1]={t=M.clamp(p.t,0,last_time),v=math.floor(M.clamp(p.v,0,X.MAX[dimension])+.5),i=i}
   end
-  table.sort(sorted,function(a,b) return a.t<b.t end)
+  -- Stable: two points at one time are a jump, and their order is its direction.
+  table.sort(sorted,function(a,b) if a.t~=b.t then return a.t<b.t end; return a.i<b.i end)
   if #sorted==0 then sorted[1]={t=0,v=X.NEUTRAL[dimension]} end
   sorted[1].t=0
   -- Events on the tick grid; a later event on the same tick wins.
@@ -142,11 +162,14 @@ function X.write(n,dimension,points,tick)
       end
     end
   end
+  -- Replace what the envelope showed: events from the note-on to the
+  -- note-off. Earlier ones on the channel can be the previous note's release
+  -- tail, later ones are this note's; both stay.
   local kept,removed={},false
   local length_end=length-1e-9
   for _,x in ipairs(n.expr or {}) do
     local d=M.expression(x.msg)
-    if d==dimension and x.dt<length_end then removed=true
+    if d==dimension and x.dt>-1e-9 and x.dt<length_end then removed=true
     elseif removed and M.curve_data(x.msg) then -- the removed event's curve shape
     else kept[#kept+1]=x; removed=false end
   end
@@ -157,7 +180,9 @@ function X.write(n,dimension,points,tick)
       previous=values[i]
     end
   end
-  table.sort(kept,function(a,b) return a.dt<b.dt end)
+  -- Stable by time: a CC's curve shape stays right after it.
+  local rank={}; for i,x in ipairs(kept) do rank[x]=i end
+  table.sort(kept,function(a,b) if a.dt~=b.dt then return a.dt<b.dt end; return rank[a]<rank[b] end)
   -- model.encode writes an edited list instead of the source's.
   kept.edited=true
   local initial={}
@@ -168,8 +193,7 @@ end
 
 -- Spread the notes of a plain one-channel part over MPE member channels
 -- 2-16 (lower zone), so each sounding note can carry its own expression.
--- Controllers on the old channel stay there; on channel 1 they become the
--- zone's master controllers. Returns nil and a reason when it cannot.
+-- Returns true and the part's channel, or nil and a reason when it cannot.
 function X.make_mpe(notes)
   local channel
   for _,n in ipairs(notes) do
@@ -188,6 +212,24 @@ function X.make_mpe(notes)
     if not best then return nil,'More than 15 notes sound at once; MPE has 15 voice channels.' end
     n.channel=best; free_since[best]=n.e; n.initial=setmetatable({},M.shared)
   end
-  return true
+  return true,channel
+end
+-- The part's own channel controllers (bend, pressure, CCs, program) move to
+-- the zone's master channel (MIDI channel 1), where they act on every note
+-- as before. Returns the source's raw MIDI with that change, or nil when
+-- there is nothing to move.
+function X.to_master(source,channel)
+  if not channel or channel==0 then return nil end
+  local parts,last,moved={},0,false
+  for _,e in ipairs(source.events) do
+    local msg=e.msg; local status=msg:byte(1)
+    if not e.note_id and status and status&15==channel and (status&0xF0==0xB0 or status&0xF0==0xC0 or status&0xF0==0xD0 or status&0xF0==0xE0) then
+      msg=string.char(status&0xF0)..msg:sub(2); moved=true
+    end
+    local delta=e.pos-last
+    while delta>0x7FFFFFFF do parts[#parts+1]=string.pack('i4Bs4',0x7FFFFFFF,0,''); delta=delta-0x7FFFFFFF end
+    parts[#parts+1]=string.pack('i4Bs4',delta,e.flags,msg); last=e.pos
+  end
+  return moved and table.concat(parts) or nil
 end
 return X

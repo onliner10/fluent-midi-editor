@@ -188,4 +188,54 @@ for i=1,16 do notes[i]={s=0,e=1,pitch=40+i,vel=100,channel=0} end
 local done,why=X.make_mpe(notes); ok(not done and why:match('15'),'16 voices do not fit')
 notes={{s=0,e=1,pitch=60,vel=100,channel=0},{s=0,e=1,pitch=62,vel=100,channel=3}}
 done,why=X.make_mpe(notes); ok(not done and why:match('channels'),'several parts')
+-- 10. Writing an envelope back as it is keeps every step and ramp: random
+-- envelopes with jumps (two points at one time) survive a write and a read.
+math.randomseed(7)
+for round=1,200 do
+  local dimension=X.DIMENSIONS[round%3+1]
+  local maximum=X.MAX[dimension]
+  local points,t={{t=0,v=math.random(0,maximum)}},0
+  for _=1,math.random(1,6) do
+    t=t+math.random(1,8)/16
+    if t>=1.9 then break end
+    if math.random()<.5 then points[#points+1]={t=t,v=points[#points].v} end
+    points[#points+1]={t=t,v=math.random(0,maximum)}
+  end
+  local source=M.decode(stream({{0,pb(1,center)},{0,on(1,60)},{1920,off(1,60)},{1920,pb(2,center)},{1920,on(2,64)},{2880,off(2,64)},{3840,END}}),from)
+  local back=find(edit(source,60,dimension,points),60)
+  local shown=X.envelope(back,dimension,TICK)
+  local step=dimension=='pb' and 14 or 1.6
+  for q=0,1.99,1/32 do
+    -- Compare away from jumps, where one tick decides which value shows.
+    local near_jump=false
+    for k=2,#points do if points[k].t==points[k-1].t and math.abs(q-points[k].t)<.01 then near_jump=true end end
+    if not near_jump then near(X.value(shown,q),X.value(points,q),step,'round '..round..' '..dimension..' at '..q) end
+  end
+end
+
+-- 11. Editing a note keeps the previous note's release tail on its channel.
+local tailed=M.decode(stream({{0,pb(1,center)},{0,on(1,60)},{960,off(1,60)},{1100,pb(1,9000)},{1300,pb(1,center)},
+  {1920,on(1,62)},{2880,off(1,62)},{2880,pb(2,center)},{2880,on(2,64)},{3000,off(2,64)},{3840,END}}),from)
+local tail_edit=edit(tailed,62,'pb',{{t=0,v=center},{t=.5,v=center+1000}})
+local kept_tail=0
+for _,e in ipairs(tail_edit.events) do local d,c,v=M.expression(e.msg)
+  if d=='pb' and c==1 and ((e.pos==1100 and v==9000) or (e.pos==1300 and v==center)) then kept_tail=kept_tail+1 end end
+eq(kept_tail,2,'release tail of the previous note kept')
+
+-- 12. Converting a part on another channel moves its controllers to the
+-- master channel, so its held bend still reaches every note.
+raw=stream({{0,pb(1,10000)},{0,on(1,60)},{0,on(1,64)},{960,off(1,60)},{960,off(1,64)},{3840,END}})
+local part=M.decode(raw,from)
+notes=M.copy(part.notes)
+local converted_ok,channel=X.make_mpe(notes)
+ok(converted_ok); eq(channel,1)
+local master_raw=X.to_master(part,channel)
+ok(master_raw,'controllers to move')
+local moved_part=M.decode(M.encode(M.decode(master_raw,from,true),notes,to),from,true)
+eq(state_at(moved_part,0,0).pb,10000,'the bend is on the master channel')
+for _,n in ipairs(moved_part.notes) do
+  local s=state_at(moved_part,n.channel,n.on.pos)
+  ok(s.pb==nil or s.pb==center,'member channel '..n.channel..' adds no bend of its own')
+end
+eq(X.to_master(M.decode(stream({{0,pb(0,9000)},{0,on(0,60)},{960,off(0,60)},{3840,END}}),from),0),nil,'channel 1 is already the master')
 return count
