@@ -19,6 +19,10 @@ X.MAX={pb=16383,at=127,tb=127}
 -- editor wrote reads back as the two breakpoints it came from.
 local QUANTUM={pb=8,at=1,tb=1}
 local TOLERANCE={pb=12,at=1.5,tb=1.5}
+-- A value held at least this long (in beats) and then left with a jump is a
+-- step. Controllers stream every few milliseconds while they move; that is
+-- a line, as in Ableton, not a staircase.
+local HOLD=1/16
 
 -- Can this note's expression be edited? Only an MPE note on a channel of its own.
 function X.editable(n,source)
@@ -67,7 +71,7 @@ function X.envelope(n,dimension,tick)
   for _,x in ipairs(n.expr or {}) do
     local d,_,v=M.expression(x.msg)
     if d==dimension and x.dt>1e-9 and x.dt<length-1e-9 and v~=value then
-      if math.abs(v-value)>TOLERANCE[dimension] and x.dt-since>1.5*tick then raw[#raw+1]={t=x.dt,v=value} end
+      if math.abs(v-value)>TOLERANCE[dimension] and x.dt-since>=math.max(1.5*tick,HOLD)-1e-9 then raw[#raw+1]={t=x.dt,v=value} end
       raw[#raw+1]={t=x.dt,v=v}; value=v; since=x.dt
     end
   end

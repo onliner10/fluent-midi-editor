@@ -90,16 +90,26 @@ eq(#X.envelope(find(ramped,64),'at'),3); eq(X.envelope(find(ramped,64),'tb')[3].
 local fast=X.envelope(find(edit(mpe,60,'pb',{{t=0,v=center},{t=.1,v=center+4096}}),60),'pb')
 eq(#fast,2,'fast slide reads back as two points')
 
--- Simplify turns a dense staircase recording into a few smooth points.
+-- A controller streaming a slide (an event every 0.04 beat, bigger steps
+-- than the tolerance) is a line, not a staircase.
+local streamed={{0,pb(1,center-683)},{0,on(1,60)}}
+for i=1,12 do streamed[#streamed+1]={i*38,pb(1,center-683+math.floor(683*i/12))} end
+streamed[#streamed+1]={900,off(1,60)}; streamed[#streamed+1]={960,pb(2,center)}; streamed[#streamed+1]={960,on(2,64)}
+streamed[#streamed+1]={1800,off(2,64)}; streamed[#streamed+1]={3840,END}
+local slide_line=X.envelope(find(M.decode(stream(streamed),from),60),'pb')
+eq(#slide_line,2,'a streamed slide is one line: '..#slide_line)
+
+-- Simplify turns a dense recording into a few smooth points.
 local wobble={{0,pb(1,center)},{0,on(1,60)}}
-for i=1,40 do wobble[#wobble+1]={i*20,pb(1,center+math.floor(math.sin(i*20/Q*3)*400))} end
+-- A finger's vibrato with jitter: a little noise on every event.
+for i=1,40 do wobble[#wobble+1]={i*20,pb(1,center+math.floor(math.sin(i*20/Q*3)*400)+(i*37)%41-20)} end
 wobble[#wobble+1]={900,off(1,60)}; wobble[#wobble+1]={960,pb(2,center)}; wobble[#wobble+1]={960,on(2,64)}
 wobble[#wobble+1]={1800,off(2,64)}; wobble[#wobble+1]={3840,END}
 local recorded=M.decode(stream(wobble),from)
 local dense=X.envelope(find(recorded,60),'pb')
-ok(#dense>40,'a staircase recording has many points: '..#dense)
+ok(#dense>10,'a jittery recording has many points: '..#dense)
 local simple=X.simplify(dense,'pb')
-ok(#simple<#dense/4,'simplified to a few points: '..#simple)
+ok(#simple<#dense/2,'simplified to fewer points: '..#dense..' -> '..#simple)
 eq(simple[1].t,0)
 for t=0,.8,.05 do near(X.value(simple,t),X.value(dense,t),60,'simplified stays close at '..t) end
 local smoothed=edit(recorded,60,'pb',simple)
