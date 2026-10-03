@@ -184,7 +184,8 @@ rate. Existing CC can be edited in the lane. Native shapes other than linear
 or step need the **Import current CC as points** button, which
 replaces their interpolation with segments between points. When the editor detects
 a mismatch between the stored points and CC changed from outside, it also
-offers the import. Pitch bend, MPE and 14-bit CC have no dedicated editor.
+offers the import. Channel pitch bend and 14-bit CC have no dedicated lane;
+per-note MPE expression has its own editor (see "Editing MPE expression").
 
 ## What travels with a note
 
@@ -210,12 +211,51 @@ starts and its release tail:
 
 Channels that play chords (a zone's master channel, or an ordinary non-MPE
 clip) are left as they were: their pitch bend and CC stay at their time.
-Expression is preserved, not drawn: there is no per-note bend editor yet.
 A CC74 modulation lane on an MPE channel replaces the notes' own timbre there.
 
 Two notes of one pitch cannot sound together on one channel. As in Ableton, a note
 you move, draw or paste over the start of another note replaces it, and over its end
 shortens it.
+
+## Editing MPE expression
+
+As in Ableton Live's Note Expression view, press **MPE** in the toolbar (**E**)
+to edit each note's own pitch bend, slide (CC74) and pressure:
+
+- **Pitch** is drawn on the notes: one row is one semitone, and the line through
+  the middle of a note is no bend. Set the instrument's bend range under
+  *MPE expression* in the sidebar (MPE synths default to 48 semitones).
+- **Slide** and **Pressure** are tabs in the lane under the piano roll, next to
+  Velocity. Every note's line is shown there; the selected notes' are bright.
+
+Only the selected notes' envelopes are editable; select a note first, by clicking
+it or its line in the lane. Then:
+
+| Gesture | Action |
+| :- | :- |
+| Drag a line | Add a point there and move it |
+| Drag a point | Move it in time and value; the value shows next to it |
+| Shift while dragging | Move in one direction only |
+| Alt while dragging pitch | Snap to semitones |
+| Click a point | Delete it (the first point is the value the note starts with) |
+| Right-click a point | Delete it, clear the envelope, or clear all expression of the selected notes |
+| Draw (B) + drag | Draw freehand: pitch over the note under the pointer, slide or pressure over every selected note |
+| Fold | Hides pitch envelopes, as in Ableton |
+
+To move a selected note while MPE editing is on, grab it above or below its
+pitch line. Each finished gesture is one Undo step.
+
+The editor shows the MIDI as breakpoints: a value that holds and then jumps is
+two points, a recorded or drawn slope is a line. Lines are written as small
+steps (1/128 of the range for slide and pressure, about 1/2000 for pitch), and a
+dense recording is shown with fewer points, within a few steps of what was
+recorded; it is only rewritten for an envelope you edit.
+
+**A clip that is not MPE** (all notes on one channel) can be converted with
+**Convert to MPE** in the sidebar. Each sounding note gets its own channel
+(2-16, the lower MPE zone; at most 15 notes at once), so each can bend on its
+own. Controllers on channel 1 stay there and act on the whole zone, as MPE
+defines. Switch the instrument to MPE mode afterwards.
 
 ## Cheat sheet
 
@@ -238,6 +278,7 @@ shortens it.
 | Drag a velocity marker | Velocity; a selected group keeps its differences |
 | Velocity slider | One value for selected notes, or the value for new notes |
 | F / 0 | Fold to used pitches (keeps the zoom) / mute notes |
+| E | MPE editing: pitch on the notes, slide and pressure in the lane |
 | Ctrl+1 / 2 / 3 / 4 | Finer / coarser grid / triplets / snap |
 | Alt while resizing an edge | Temporarily invert snap |
 | Ctrl + wheel | Zoom time around the pointer |
@@ -274,7 +315,8 @@ ones with a single source loop enabled, grow when the copy extends past their en
 - Pooled MIDI keeps sharing its source as in REAPER. Changing
   two clips from the same pool at once is rejected; edit only one of them.
 - The clipboard is internal and shared by the clips in the current window.
-- No Chance or MPE editing.
+- No Chance editing. MPE expression has no curved segments: points are joined by
+  straight lines.
 
 ## Development
 

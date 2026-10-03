@@ -35,13 +35,30 @@ local function two_clips_with_lane()
   T.select(r.GetTrackMediaItem(r.GetTrack(0,0),0),r.GetTrackMediaItem(r.GetTrack(0,1),0))
 end
 local function one_clip() T.select((T.midi_item(0,16,{{60,0,1},{72,4,6}},'Piano'))) end
+-- MPE editing on: an MPE clip (bend range), then a plain one (Convert to MPE).
+local function mpe(plain)
+  return function()
+    r.SetExtState('FluentMIDIEditor','expression','1',true)
+    local item,take=T.midi_item(0,8,{},'MPE')
+    local msgs=plain and {{0,'\144\60\100'},{960,'\128\60\0'}} or
+      {{0,'\225\0\64'},{0,'\145\60\100'},{960,'\129\60\0'},{960,'\226\0\70'},{960,'\146\64\100'},{1920,'\130\64\0'}}
+    local parts,last={},0
+    for _,e in ipairs(msgs) do parts[#parts+1]=string.pack('i4Bs4',e[1]-last,0,e[2]); last=e[1] end
+    parts[#parts+1]=string.pack('i4Bs4',7680-last,0,'\176\123\0')
+    r.MIDI_SetAllEvts(take,table.concat(parts)); r.MIDI_Sort(take)
+    T.select(item)
+  end
+end
 return T.steps(T.concat(
   states(two_clips_with_lane,'two clips and a modulation lane'),
   states(one_clip,'one clip'),
+  states(mpe(false),'MPE editing'),
+  states(mpe(true),'MPE editing on a plain clip'),
+  {function() r.SetExtState('FluentMIDIEditor','expression','0',true); return true end},
   states(function() end,'no clip selected'),
   {function()
     T.close_editor()
     T.eq(#found,0,'layout problems\n'..table.concat(found,'\n'))
-    print('no overlaps in 3 states at 2 sizes')
+    print('no overlaps in 5 states at 2 sizes')
     return true
   end}),120)

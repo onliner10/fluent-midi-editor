@@ -17,6 +17,7 @@ call against response. No setup, no custom actions to wire up first.
 - **Several tracks at once.** Clips from different tracks share one grid, each in its own color. One gesture across tracks is one Undo step.
 - **Phrases and repeats.** Set a phrase length in bars (`2`, `0.5`, `1.5`), halve or double it, and let a short phrase repeat to the end of the longest one. Repeats are real, pooled REAPER clips that keep playing after the editor is closed.
 - **Modulation inside the clip.** Draw CC curves or steps, or move a knob in a plugin on the track to capture that parameter. The curve lives in the clip, so copying the clip carries it.
+- **MPE expression per note.** As in Ableton's Note Expression view: bend a note's pitch on the note itself, draw slide and pressure in the lane below, or convert a plain part to MPE.
 - **Fast editing.** Ctrl+D duplicates the selected time including silence, Alt+drag sets velocity, F folds to used pitches, Ctrl+wheel zooms around the pointer.
 - **Native Undo, native MIDI.** Everything is written straight into REAPER's takes. Nothing needs to keep running.
 

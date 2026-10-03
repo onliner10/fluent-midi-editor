@@ -137,7 +137,10 @@ function B.new(r,M)
           self.origin+ending),'Could not extend the clip')
       end
       assert(r.MIDI_SetAllEvts(self.take,encoded),'Could not write MIDI')
-      if source.mpe and not self.known_mpe then r.GetSetMediaItemTakeInfo_String(self.take,'P_EXT:FluentMIDIMPE','1',true) end
+      -- Notes with a starting state are MPE notes, also right after a conversion.
+      local mpe=source.mpe
+      for _,n in ipairs(notes) do if n.initial then mpe=true end end
+      if mpe and not self.known_mpe then r.GetSetMediaItemTakeInfo_String(self.take,'P_EXT:FluentMIDIMPE','1',true) end
       -- MIDI_SetItemExtents turns Loop source off. A looped clip keeps it: the
       -- source already ends at end_ppq, so only the item grows.
       if ending>self.length+1e-7 and self.looped then
