@@ -90,6 +90,21 @@ eq(#X.envelope(find(ramped,64),'at'),3); eq(X.envelope(find(ramped,64),'tb')[3].
 local fast=X.envelope(find(edit(mpe,60,'pb',{{t=0,v=center},{t=.1,v=center+4096}}),60),'pb')
 eq(#fast,2,'fast slide reads back as two points')
 
+-- Simplify turns a dense staircase recording into a few smooth points.
+local wobble={{0,pb(1,center)},{0,on(1,60)}}
+for i=1,40 do wobble[#wobble+1]={i*20,pb(1,center+math.floor(math.sin(i*20/Q*3)*400))} end
+wobble[#wobble+1]={900,off(1,60)}; wobble[#wobble+1]={960,pb(2,center)}; wobble[#wobble+1]={960,on(2,64)}
+wobble[#wobble+1]={1800,off(2,64)}; wobble[#wobble+1]={3840,END}
+local recorded=M.decode(stream(wobble),from)
+local dense=X.envelope(find(recorded,60),'pb')
+ok(#dense>40,'a staircase recording has many points: '..#dense)
+local simple=X.simplify(dense,'pb')
+ok(#simple<#dense/4,'simplified to a few points: '..#simple)
+eq(simple[1].t,0)
+for t=0,.8,.05 do near(X.value(simple,t),X.value(dense,t),60,'simplified stays close at '..t) end
+local smoothed=edit(recorded,60,'pb',simple)
+ok(#X.envelope(find(smoothed,60),'pb')<=#simple+1,'reads back as the simplified points')
+
 -- 3. A step stays a step: two events, no ramp.
 local stepped=edit(mpe,64,'at',{{t=0,v=0},{t=.25,v=0},{t=.25,v=120}})
 local s3=find(stepped,64)

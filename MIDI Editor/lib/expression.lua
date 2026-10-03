@@ -92,6 +92,21 @@ function X.flat(points,dimension)
   return #points==1 and points[1].v==X.NEUTRAL[dimension]
 end
 
+-- Fewer points for a dense recording: steps become a smooth line within a
+-- few times the display tolerance (about a quarter semitone of bend at a
+-- 48-semitone range, or 6 of 127). For an envelope to write with X.write.
+function X.simplify(points,dimension)
+  local events={}
+  for k,p in ipairs(points) do
+    -- A held value before a jump is the first of two points at one time.
+    local nextp=points[k+1]
+    if not (nextp and nextp.t==p.t) then events[#events+1]={t=p.t,v=p.v} end
+  end
+  if #events==0 then return {{t=0,v=points[1].v}} end
+  events[1].t=0
+  return thin(events,4*TOLERANCE[dimension])
+end
+
 -- Replace one dimension of a note's expression with breakpoints. tick: one
 -- MIDI tick in quarter notes, for ramp resolution and to keep the last event
 -- before the note-off. Returns the new expression list and starting state;

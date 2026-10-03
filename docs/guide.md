@@ -228,22 +228,34 @@ to edit each note's own pitch bend, slide (CC74) and pressure:
 - **Slide** and **Pressure** are tabs in the lane under the piano roll, next to
   Velocity. Every note's line is shown there; the selected notes' are bright.
 
-Only the selected notes' envelopes are editable; select a note first, by clicking
-it or its line in the lane. Then:
+Selected notes' envelopes are bright and editable. A line under the pointer
+shows where a point would go and its value; the line of an unselected note
+that already bends, and any line in the Slide or Pressure lane, lights up and
+can be grabbed directly: that selects its note.
 
 | Gesture | Action |
 | :- | :- |
 | Drag a line | Add a point there and move it |
 | Drag a point | Move it in time and value; the value shows next to it |
+| Click a point | Select it (orange) |
+| ↑ / ↓ | Nudge the selected point a semitone (pitch, to whole semitones) or 8 steps; with Shift a tenth of a semitone or one step |
+| ← / → | Move the selected point by a grid step; with Shift by 1/64 beat |
+| Delete, or double-click a point | Delete it (the first point resets the starting value) |
+| Escape | Deselect the point |
+| Ctrl + drag a line or point | Move the whole envelope of every selected note up or down |
 | Shift while dragging | Move in one direction only |
 | Alt while dragging pitch | Snap to semitones |
-| Click a point | Delete it (the first point is the value the note starts with) |
-| Right-click a point | Delete it, clear the envelope, or clear all expression of the selected notes |
+| Right-click a line or point | Simplify, clear, delete the point |
 | Draw (B) + drag | Draw freehand: pitch over the note under the pointer, slide or pressure over every selected note |
 | Fold | Hides pitch envelopes, as in Ableton |
 
-To move a selected note while MPE editing is on, grab it above or below its
-pitch line. Each finished gesture is one Undo step.
+**Simplify** (right-click a line or a note) turns a dense recording into a few
+smooth points that are easy to reshape, staying within about a quarter of a
+semitone (or 6 of 127) of what was played.
+
+A selected note's flat pitch line runs through its middle: to move the note,
+grab it above or below the line. Each finished gesture and each nudge is one
+Undo step.
 
 The editor shows the MIDI as breakpoints: a value that holds and then jumps is
 two points, a recorded or drawn slope is a line. Lines are written as small

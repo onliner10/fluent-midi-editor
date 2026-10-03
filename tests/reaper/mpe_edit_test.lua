@@ -38,7 +38,7 @@ local function value_at(channel,kind,qn)
   return v
 end
 
-local c3,lane
+local c3,lane,before
 return T.steps(T.concat(T.open_steps(),
   function()
     c3=T.find(T.note_color(100)); T.ok(c3,'C3 not drawn')
@@ -63,6 +63,22 @@ return T.steps(T.concat(T.open_steps(),
     T.eq(value_at(1,0xD0,1.5),90,'pressure untouched')
     return true
   end,
+  -- The dragged point stays selected: Up nudges it to the next whole
+  -- semitone, and again to the one after.
+  function() before=(value_at(1,0xE0,1.95)-8192)/8192*48; T.keys('Up'); return true end,0.6,
+  function() T.keys('Up'); return true end,0.6,
+  function()
+    local semis=(value_at(1,0xE0,1.95)-8192)/8192*48
+    T.ok(semis>before+1.01 and math.abs(semis-math.floor(semis+.5))<.02,'nudged up two whole semitones: '..before..' -> '..semis)
+    return true
+  end,
+  -- Delete removes the selected point: the bend is gone.
+  function() T.keys('Delete'); return true end,0.6,
+  function()
+    T.eq(value_at(1,0xE0,1.95),8192,'point deleted, C3 in tune again')
+    T.ok(T.find(T.note_color(100)),'the note itself is still there')
+    return true
+  end,
   -- Pressure lane: drag C3's starting pressure point halfway up.
   function() local tab=T.control('lane Pressure'); return T.click_steps(tab.cx,tab.cy) end,
   function()
@@ -75,14 +91,28 @@ return T.steps(T.concat(T.open_steps(),
     T.ok(start>=55 and start<=72,'starting pressure raised to about 64: '..tostring(start))
     T.eq(value_at(1,0xD0,1.5),90,'the step to 90 stays')
     T.eq(value_at(2,0xD0,2),20,'E3 pressure untouched')
-    T.ok(math.abs(value_at(1,0xE0,1.95)-(8192+2*8192/48))<40,'pitch bend kept')
+    T.eq(value_at(1,0xE0,1.95),8192,'pitch untouched')
+    return true
+  end,
+  -- Ctrl+drag E3's pressure line (E3 is not selected yet): its whole
+  -- envelope moves up; C3 is deselected and keeps its pressure.
+  function()
+    local e3=T.find(T.note_color(70))
+    local y=lane[4]-4-math.floor(20/127*(lane[4]-lane[2]-10)+.5)
+    return T.concat({function() T.keydown('ctrl'); return true end,0.2},
+      T.drag_steps(e3.cx,y,e3.cx,y-30),{function() T.keyup('ctrl'); return true end,0.4})
+  end,
+  function()
+    local e3=value_at(2,0xD0,2)
+    T.ok(e3>=40 and e3<=70,'E3 pressure moved up as a whole: '..tostring(e3))
+    T.ok(value_at(1,0xD0,0)>=55,'C3 pressure kept')
     r.Undo_DoUndo2(0)
-    T.eq(value_at(1,0xD0,0),0,'one Undo restores the pressure')
+    T.eq(value_at(2,0xD0,2),20,'one Undo restores E3')
     return true
   end,
   0.5,
   function()
     T.close_editor(); r.SetExtState('FluentMIDIEditor','expression','0',true)
-    print('MPE pitch and pressure edited with the mouse')
+    print('MPE pitch and pressure edited with mouse and keys')
     return true
   end),60)

@@ -225,6 +225,7 @@ function E.run(r,initial_item,dir)
   local function toggle_expression()
     S.expression=not S.expression
     if not S.expression then S.exprLane='vel' elseif S.exprLane=='vel' then S.exprLane='tb' end
+    S.exprPoint=nil
     r.SetExtState('FluentMIDIEditor','expression',S.expression and '1' or '0',true)
     S.status=S.expression and 'MPE: select a note to edit its pitch, slide and pressure.' or 'MPE editing off.'
   end
@@ -237,7 +238,7 @@ function E.run(r,initial_item,dir)
   local function envelope(i,n,dimension)
     local d=S.drag
     if d and d.kind=='expr' and d.note==i and d.dim==dimension then return d.points end
-    if d and d.kind=='expr_draw' and d.dim==dimension and d.preview[i] then return d.preview[i] end
+    if d and (d.kind=='expr_draw' or d.kind=='expr_offset') and d.dim==dimension and d.preview[i] then return d.preview[i] end
     return X.envelope(n,dimension,note_tick(n))
   end
   -- Write new envelopes: {[note index]=points} of one dimension, one Undo step.
@@ -248,6 +249,69 @@ function E.run(r,initial_item,dir)
       if n then n.expr,n.initial=X.write(n,dimension,points,note_tick(n)) end
     end
     return commit(notes,label or EXPRESSION_LABELS[dimension])
+  end
+  -- The selected breakpoint, kept by its note and place so it survives the
+  -- re-read after each write. Arrows nudge it, Delete removes it.
+  local function remember_point(n,dimension,p)
+    S.exprPoint=p and {take=n.take_index,pitch=n.pitch,s=n.s,dim=dimension,t=p.t,v=p.v} or nil
+  end
+  local function resolve_point()
+    local h=S.exprPoint; if not (h and S.expression) then return end
+    for i,n in ipairs(S.notes) do
+      if n.take_index==h.take and n.pitch==h.pitch and math.abs(n.s-h.s)<1e-7 and n.selected and expression_editable(n) then
+        local best,dist
+        for k,p in ipairs(X.envelope(n,h.dim,note_tick(n))) do
+          local dd=math.abs(p.t-h.t)*1000+math.abs(p.v-h.v)/X.MAX[h.dim]*10
+          if not dist or dd<dist then best,dist=k,dd end
+        end
+        if dist and dist<5 then return {note=i,dim=h.dim,point=best} end
+      end
+    end
+    S.exprPoint=nil
+  end
+  local function semitone_value(semis) return 8192+semis/S.bendRange*8192 end
+  -- Up / Down: a semitone (pitch) or 8 steps; Shift: a tenth of a semitone or
+  -- one step. Left / Right: a grid step; Shift: 1/64 beat.
+  local function nudge_point(h,dx,dy,fine)
+    local n=S.notes[h.note]
+    local points=M.copy(X.envelope(n,h.dim,note_tick(n))); local p=points[h.point]
+    if not p then return end
+    if dy~=0 then
+      if h.dim=='pb' then
+        local semis=(p.v-8192)/8192*S.bendRange
+        -- Stored bends are whole 14-bit steps: 2 semitones reads 1.998.
+        semis=fine and semis+dy*.1 or (dy>0 and math.floor(semis+.02)+1 or math.ceil(semis-.02)-1)
+        p.v=semitone_value(semis)
+      else p.v=p.v+dy*(fine and 1 or 8) end
+      p.v=M.clamp(p.v,0,X.MAX[h.dim])
+    end
+    if dx~=0 and h.point>1 then
+      local after=points[h.point+1]
+      p.t=M.clamp(p.t+dx*(fine and 1/64 or grid()),points[h.point-1].t,after and after.t or n.e-n.s)
+    end
+    remember_point(n,h.dim,p)
+    write_expression({[h.note]=points},h.dim)
+  end
+  -- The first point is the note's starting value: deleting it resets it.
+  local function delete_point(h)
+    local n=S.notes[h.note]
+    local points=M.copy(X.envelope(n,h.dim,note_tick(n)))
+    if h.point>1 then table.remove(points,h.point) else points[1].v=X.NEUTRAL[h.dim] end
+    S.exprPoint=nil
+    write_expression({[h.note]=points},h.dim,'Delete '..({pb='pitch bend',tb='slide',at='pressure'})[h.dim]..' point')
+  end
+  -- Simplify: dense recordings become a few smooth points, easy to edit.
+  local function simplify_expression(only)
+    local notes,count=M.copy(S.notes),0
+    for _,n in ipairs(notes) do if n.selected and expression_editable(n) then
+      for _,dimension in ipairs(X.DIMENSIONS) do if not only or only==dimension then
+        local points=X.envelope(n,dimension,note_tick(n))
+        if #points>2 then n.expr,n.initial=X.write(n,dimension,X.simplify(points,dimension),note_tick(n)); count=count+1 end
+      end end
+    end end
+    S.exprPoint=nil
+    if count==0 then S.status='Nothing to simplify in the selected notes.'; return end
+    commit(notes,'Simplify note expression')
   end
   local function clear_expression()
     local notes,count=M.copy(S.notes),0
@@ -300,10 +364,20 @@ function E.run(r,initial_item,dir)
       S.lengthInputUsed or ImGui.IsAnyItemActive(ctx) and not S.drag then return end
     local ctrl,shift,alt=mods()
     if key('Escape') then
-      if S.drag then S.notes=S.drag.before or S.notes; S.drag=nil else deselect(); S.range=nil end
+      if S.drag then S.notes=S.drag.before or S.notes; S.drag=nil
+      elseif S.exprPoint then S.exprPoint=nil
+      else deselect(); S.range=nil end
       return
     end
     if S.drag then return end
+    -- A selected expression point takes the arrows and Delete from the notes.
+    local point=S.exprSelected
+    if point and not ctrl then
+      if key('Delete') or key('Backspace') then delete_point(point); return end
+      local dx=(key('RightArrow',true) and 1 or 0)-(key('LeftArrow',true) and 1 or 0)
+      local dy=(key('UpArrow',true) and 1 or 0)-(key('DownArrow',true) and 1 or 0)
+      if dx~=0 or dy~=0 then nudge_point(point,dx,dy,shift); return end
+    end
     if key('Space') then transport() end
     if ctrl then
       if key('A') then S.range=nil; for _,n in ipairs(S.notes) do n.selected=not shift or not n.selected end end
@@ -486,8 +560,9 @@ function E.run(r,initial_item,dir)
   local SHORTCUTS={{'B','Draw'},{'F','Fold to used pitches'},{'Z','Zoom to selection'},{'X','Show all clips'},
     {'0','Mute notes'},{'Ctrl+4','Snap'},{'Ctrl+D','Duplicate time'},{'Shift+↑↓','Octave'},
     {'Right-click','Pick overlapping'},{'Ctrl+wheel','Zoom time'},{'Alt+wheel','Row height'},{'Shift+wheel','Scroll time'}}
-  local EXPRESSION_SHORTCUTS={{'Drag a line','Add a point'},{'Click a point','Delete it'},{'Drag a point','Move it'},
-    {'Shift+drag','One direction'},{'Alt+drag','Pitch: semitones'},{'B+drag','Draw'},{'E','MPE editing'}}
+  local EXPRESSION_SHORTCUTS={{'Drag a line','Add a point'},{'Drag a point','Move it'},{'Click a point','Select it'},
+    {'Arrows','Nudge the point'},{'Double-click','Delete a point'},{'Ctrl+drag','Whole envelope'},
+    {'Shift / Alt','Straight / semitones'},{'B+drag','Draw'},{'E','MPE editing'}}
   local function expression_controls()
     local b=B.clips[B.active]
     ui:separator()
@@ -655,28 +730,54 @@ function E.run(r,initial_item,dir)
     if S.expression then for i,n in ipairs(S.notes) do
       if n.selected and n.e>S.start and n.s<S.start+S.span and expression_editable(n) then expr_notes[#expr_notes+1]=i end
     end end
-    -- The breakpoint, or else the line, of a selected note under the pointer.
-    local function probe(dimension,ymap)
+    -- The breakpoint, or else the line, of a note under the pointer. select:
+    -- the candidates are not selected yet; grabbing one selects it.
+    local function probe(dimension,ymap,candidates,select)
       local best,dist,segment
-      for _,i in ipairs(expr_notes) do local n=S.notes[i]
+      for _,i in ipairs(candidates) do local n=S.notes[i]
         local points=envelope(i,n,dimension)
         for k,p in ipairs(points) do
           local yy=ymap(n,p.v)
           local dd=yy and math.abs(tx(n.s+p.t)-mx)+math.abs(yy-my)
-          if dd and dd<8 and (not dist or dd<dist) then best,dist={note=i,dim=dimension,point=k},dd end
+          if dd and dd<8 and (not dist or dd<dist) then best,dist={note=i,dim=dimension,point=k,select=select},dd end
         end
         local t=tq(mx)-n.s
         if not segment and t>=0 and t<=n.e-n.s then
           local v=X.value(points,t); local yy=ymap(n,v)
-          if yy and math.abs(yy-my)<4 then segment={note=i,dim=dimension,t=t,v=v} end
+          if yy and math.abs(yy-my)<4 then segment={note=i,dim=dimension,t=t,v=v,select=select} end
         end
       end
       return best or segment
     end
     local expr_hit
+    S.exprSelected=resolve_point()
+    -- A point stays selected only while its envelope is on screen.
+    local shown=S.exprSelected and (S.exprSelected.dim=='pb' and show_pitch or S.exprSelected.dim==expr_lane)
+    if S.exprSelected and not shown then S.exprPoint=nil; S.exprSelected=nil end
     if S.expression and hovered and not S.drag then
-      if in_grid and show_pitch then expr_hit=probe('pb',pitch_y)
-      elseif in_vel and expr_lane then expr_hit=probe(expr_lane,function(_,v) return lane_y(v) end) end
+      -- Selected notes first. A bent note's line, and any line in the lane,
+      -- can be grabbed without selecting the note first; a flat pitch line of
+      -- an unselected note leaves the note to be moved.
+      if in_grid and show_pitch then
+        expr_hit=probe('pb',pitch_y,expr_notes)
+        if not expr_hit then
+          local others={}
+          for _,entry in ipairs(visible.notes) do local i,n=entry.i,entry.n
+            if not n.selected and expression_editable(n) and not X.flat(envelope(i,n,'pb'),'pb') then others[#others+1]=i end
+          end
+          expr_hit=probe('pb',pitch_y,others,true)
+        end
+      elseif in_vel and expr_lane then
+        local function y_of(_,v) return lane_y(v) end
+        expr_hit=probe(expr_lane,y_of,expr_notes)
+        if not expr_hit then
+          local others={}
+          for i,n in ipairs(S.notes) do
+            if not n.selected and n.e>S.start and n.s<S.start+S.span and expression_editable(n) then others[#others+1]=i end
+          end
+          expr_hit=probe(expr_lane,y_of,others,true)
+        end
+      end
     end
     local function draw_envelope(n,points,ymap,color,handles,width)
       local px,py
@@ -697,10 +798,12 @@ function E.run(r,initial_item,dir)
         end
       end
     end
-    -- The point being dragged or hovered, larger and with its value.
+    -- A point being dragged, hovered or selected: a ring and its value.
     local function mark_point(dimension,xx,yy,v)
-      ImGui.DrawList_AddCircle(dl,xx,yy,6,C.note_selected,0,1.5)
-      text(xx+9,yy-18,C.text,dimension=='pb' and string.format('%+.2f st',semitones(v)) or tostring(math.floor(v+.5)))
+      ImGui.DrawList_AddCircle(dl,xx,yy,7,C.note_selected,0,1.5)
+      local label=dimension=='pb' and string.format('%+.2f st',semitones(v)) or tostring(math.floor(v+.5))
+      ImGui.DrawList_AddRectFilled(dl,xx+8,yy-21,xx+12+ui:text_width(label),yy-5,ui.alpha(C.well,0xD0),3)
+      text(xx+10,yy-20,C.text,label)
     end
     local function point_at(h)
       local n=S.notes[h.note]; local points=envelope(h.note,n,h.dim); local p=points[h.point]
@@ -927,13 +1030,37 @@ function E.run(r,initial_item,dir)
       ImGui.DrawList_AddCircleFilled(dl,xx,yy,n.selected and 4 or 3,color)
     end
     ImGui.DrawList_PopClipRect(dl)
-    local marked=S.drag and S.drag.kind=='expr' and {note=S.drag.note,dim=S.drag.dim,point=S.drag.index} or expr_hit and expr_hit.point and expr_hit
-    if marked then
+    local function clip_to(dimension,fn)
+      local top,bottom=dimension=='pb' and A.gy or A.vy,dimension=='pb' and A.gy+A.gh or A.bottom
+      ImGui.DrawList_PushClipRect(dl,A.gx,top,x+w,bottom,true); fn(); ImGui.DrawList_PopClipRect(dl)
+    end
+    -- An unselected note's line under the pointer lights up: it can be grabbed.
+    if expr_hit and expr_hit.select then
+      local n=S.notes[expr_hit.note]
+      clip_to(expr_hit.dim,function()
+        draw_envelope(n,envelope(expr_hit.note,n,expr_hit.dim),expr_hit.dim=='pb' and function(v) return pitch_y(n,v) end or lane_y,
+          expr_hit.dim=='pb' and C.note_selected or clip_color(n.take_index),true,2)
+      end)
+    end
+    local dragging=S.drag and S.drag.kind=='expr' and {note=S.drag.note,dim=S.drag.dim,point=S.drag.index}
+    local selected_point=not dragging and S.exprSelected
+    if selected_point then
+      local xx,yy,v=point_at(selected_point)
+      if xx then clip_to(selected_point.dim,function()
+        ImGui.DrawList_AddCircleFilled(dl,xx,yy,5,C.accent); mark_point(selected_point.dim,xx,yy,v)
+      end) end
+    end
+    local marked=dragging or expr_hit and expr_hit.point and expr_hit
+    if marked and not (selected_point and marked.note==selected_point.note and marked.point==selected_point.point) then
       local xx,yy,v=point_at(marked)
-      if xx then
-        local top,bottom=marked.dim=='pb' and A.gy or A.vy,marked.dim=='pb' and A.gy+A.gh or A.bottom
-        ImGui.DrawList_PushClipRect(dl,A.gx,top,x+w,bottom,true); mark_point(marked.dim,xx,yy,v); ImGui.DrawList_PopClipRect(dl)
-      end
+      if xx then clip_to(marked.dim,function() mark_point(marked.dim,xx,yy,v) end) end
+    elseif expr_hit and not expr_hit.point then
+      -- Where a drag would add a point, and the value there.
+      local n=S.notes[expr_hit.note]
+      local yy=expr_hit.dim=='pb' and pitch_y(n,expr_hit.v) or lane_y(expr_hit.v)
+      if yy then clip_to(expr_hit.dim,function()
+        ImGui.DrawList_AddCircle(dl,mx,yy,4,C.note_selected,0,1.5); mark_point(expr_hit.dim,mx,yy,expr_hit.v)
+      end) end
     end
     if playq>=S.start and playq<=S.start+S.span then line(tx(playq),A.ry,tx(playq),A.bottom,C.accent,1.5) end
     local overview_y=y+h-17
@@ -952,8 +1079,9 @@ function E.run(r,initial_item,dir)
     if not B.take then return end
     if hovered and not S.drag then
       if expr_hit and hint_hovered then
-        ImGui.SetTooltip(ctx,expr_hit.point and 'Drag: move the point. Shift: one direction'..(expr_hit.dim=='pb' and ', Alt: semitones' or '')..'.\nClick: delete it. Right-click: more.' or
-          'Drag the line to add a point there and move it.')
+        ImGui.SetTooltip(ctx,(expr_hit.point and 'Drag: move the point. Click: select it, then nudge it with the arrows.\nDouble-click or Delete: remove it. Right-click: more.' or
+          'Drag: add a point here and move it.')..'\nShift: one direction'..(expr_hit.dim=='pb' and ', Alt: semitones' or '')..
+          '. Ctrl+drag: move the whole '..(expr_hit.dim=='pb' and 'bend' or 'line')..' of the selected notes.')
       elseif hit and hint_hovered then
         local n=S.notes[hit]
         ImGui.SetTooltip(ctx,B.clips[n.take_index].track_name..' · '..M.pitch_name(n.pitch)..' · Velocity '..n.vel..
@@ -981,7 +1109,7 @@ function E.run(r,initial_item,dir)
         if grabbed_edge(S.notes[hit]) then ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_ResizeEW) end
       elseif S.draw and in_grid then ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_Hand) end
       if ImGui.IsMouseClicked(ctx,1) then
-        if expr_hit and expr_hit.point then S.exprMenu=expr_hit; ImGui.OpenPopup(ctx,'expr_menu')
+        if expr_hit then S.exprMenu=expr_hit; ImGui.OpenPopup(ctx,'expr_menu')
         elseif in_grid then
           local before=M.copy(S.notes); if not shift then deselect() end
           S.drag={kind='select',mx=mx,my=my,q=tq(mx),p=pitch(my),before=before,add=shift,right=true,candidates=candidates,hit=hit}
@@ -990,6 +1118,7 @@ function E.run(r,initial_item,dir)
       if ImGui.IsMouseClicked(ctx,2) then S.drag={kind='pan',mx=mx,my=my,start=S.start,row=S.row} end
       if ImGui.IsMouseClicked(ctx,0) then
         S.follow=false
+        if not expr_hit then S.exprPoint=nil end
         local q=math.max(0,tq(mx)); local p=pitch(my)
         if my>=overview_y then S.drag={kind='overview'}
         elseif over_phones then
@@ -1015,15 +1144,28 @@ function E.run(r,initial_item,dir)
           if lane_tab then S.exprLane=lane_tab else S.drag={kind='lane',my=my,lane=S.lane} end
         elseif expr_hit and not S.draw then
           local n=S.notes[expr_hit.note]
+          if expr_hit.select then
+            if not shift then deselect() end
+            n.selected=true; B:set_active(n.take_index); S.range=nil
+          end
           local points=M.copy(envelope(expr_hit.note,n,expr_hit.dim))
           local index=expr_hit.point
-          if not index then
+          if ctrl then
+            -- The whole envelope of every selected MPE note moves together.
+            local base={}
+            for i,o in ipairs(S.notes) do if o.selected and expression_editable(o) then base[i]=M.copy(envelope(i,o,expr_hit.dim)) end end
+            S.drag={kind='expr_offset',dim=expr_hit.dim,base=base,preview={},mx=mx,my=my}
+          elseif index and ImGui.IsMouseDoubleClicked(ctx,0) then
+            delete_point(expr_hit)
+          elseif not index then
             index=#points+1
             for k,p in ipairs(points) do if p.t>expr_hit.t then index=k; break end end
             table.insert(points,index,{t=expr_hit.t,v=expr_hit.v})
           end
-          S.drag={kind='expr',note=expr_hit.note,dim=expr_hit.dim,points=points,index=index,created=not expr_hit.point,
-            mx=mx,my=my,origin={t=points[index].t,v=points[index].v}}
+          if not ctrl and not (index and expr_hit.point and ImGui.IsMouseDoubleClicked(ctx,0)) then
+            S.drag={kind='expr',note=expr_hit.note,dim=expr_hit.dim,points=points,index=index,created=not expr_hit.point,
+              mx=mx,my=my,origin={t=points[index].t,v=points[index].v}}
+          end
         elseif S.draw and (in_vel and expr_lane or in_grid and show_pitch and (expr_hit or hit and S.notes[hit].selected and expression_editable(S.notes[hit]))) then
           -- Draw over the note under the pointer, or in the lane over every selected note.
           local targets={}
@@ -1166,6 +1308,19 @@ function E.run(r,initial_item,dir)
           t=d.index==1 and 0 or M.clamp(t,before.t,after and after.t or n.e-n.s)
           points[d.index]={t=t,v=M.clamp(v,0,X.MAX[d.dim])}
         end
+      elseif d.kind=='expr_offset' then
+        d.moved=d.moved or math.abs(my-d.my)>3
+        if d.moved then
+          local scale=d.dim=='pb' and 8192/(S.bendRange*S.rowh) or 127/(A.vh-10)
+          local dv=(d.my-my)*scale
+          if d.dim=='pb' and alt then dv=semitone_value(math.floor(semitones(8192+dv)+.5))-8192 end
+          d.dv=dv
+          for i,points in pairs(d.base) do
+            local moved={}
+            for k,p in ipairs(points) do moved[k]={t=p.t,v=M.clamp(p.v+dv,0,X.MAX[d.dim])} end
+            d.preview[i]=moved
+          end
+        end
       elseif d.kind=='expr_draw' then
         if d.lastX~=mx or d.lastY~=my then
           d.lastX,d.lastY=mx,my
@@ -1247,13 +1402,18 @@ function E.run(r,initial_item,dir)
           end
         end
         if d.kind=='expr' then
-          local points=d.points
+          local n=S.notes[d.note]
           if not d.moved then
-            if d.created then points=nil; S.status='Drag the line to bend it there.'
-            elseif d.index>1 then table.remove(points,d.index)
-            else points=nil; S.status='The first point is the value the note starts with. Drag it to change it.' end
+            -- A click selects the point, for the arrows and Delete.
+            if d.created then S.status='Drag the line to add a point there.'
+            else remember_point(n,d.dim,d.points[d.index]); S.status='Point selected: arrows nudge it, Delete removes it.' end
+          else
+            remember_point(n,d.dim,d.points[d.index])
+            write_expression({[d.note]=d.points},d.dim)
           end
-          if points then write_expression({[d.note]=points},d.dim) end
+        elseif d.kind=='expr_offset' then
+          local changes; for i,points in pairs(d.preview) do changes=changes or {}; changes[i]=points end
+          if changes then write_expression(changes,d.dim,'Move '..({pb='pitch bend',tb='slide',at='pressure'})[d.dim]) end
         elseif d.kind=='expr_draw' then
           local changes; for i,points in pairs(d.preview) do changes=changes or {}; changes[i]=points end
           if changes then write_expression(changes,d.dim,'Draw '..({pb='pitch bend',tb='slide',at='pressure'})[d.dim]) end
@@ -1279,10 +1439,8 @@ function E.run(r,initial_item,dir)
       local h=S.exprMenu; local n=h and S.notes[h.note]
       if n then
         local name=({pb='pitch bend',tb='slide',at='pressure'})[h.dim]
-        if h.point>1 and ImGui.MenuItem(ctx,'Delete point') then
-          local points=M.copy(X.envelope(n,h.dim,note_tick(n))); table.remove(points,h.point)
-          write_expression({[h.note]=points},h.dim)
-        end
+        if h.point and ImGui.MenuItem(ctx,h.point>1 and 'Delete point' or 'Reset starting value','Delete') then delete_point(h) end
+        if ImGui.MenuItem(ctx,'Simplify '..name..' of selected notes') then simplify_expression(h.dim) end
         if ImGui.MenuItem(ctx,'Clear '..name) then write_expression({[h.note]={{t=0,v=X.NEUTRAL[h.dim]}}},h.dim,'Clear '..name) end
         if ImGui.MenuItem(ctx,'Clear expression of selected notes') then clear_expression() end
       end
@@ -1293,6 +1451,7 @@ function E.run(r,initial_item,dir)
       if ImGui.MenuItem(ctx,'Copy','Ctrl+C') then copy() end
       if ImGui.MenuItem(ctx,'Paste','Ctrl+V') then paste() end
       if ImGui.MenuItem(ctx,'Delete','Delete') then delete_selected() end
+      if S.expression and ImGui.MenuItem(ctx,'Simplify expression') then simplify_expression() end
       if S.expression and ImGui.MenuItem(ctx,'Clear expression') then clear_expression() end
       ImGui.Separator(ctx)
       if ImGui.MenuItem(ctx,'Loop selection','Ctrl+L') then loop_selection() end
