@@ -105,8 +105,11 @@ local function expression_message(dimension,channel,value)
   if dimension=='at' then return string.char(0xD0|channel,value) end
   return string.char(0xB0|channel,74,value)
 end
+M.expression_message=expression_message
+M.NEUTRAL=NEUTRAL
 local CURVE=string.char(0xFF,15)..'CCBZ '
 local function curve_data(msg) return msg:byte(1)==0xFF and msg:sub(1,7)==CURVE end
+M.curve_data=curve_data
 local function shared(list) return setmetatable(list,M.shared) end
 -- REAPER notation ("NOTE channel pitch attributes") and polyphonic aftertouch
 -- name their note by channel and pitch, in any clip.
@@ -182,8 +185,9 @@ local function attach_expression(events,notes,paired,from_ppq,known)
     end
   end
   -- MPE spreads notes over member channels. A single channel with bend is an
-  -- ordinary part, even when it plays one note at a time.
-  if found<(known and 1 or 2) then return nil end
+  -- ordinary part, even when it plays one note at a time. A clip the editor
+  -- wrote as MPE stays MPE, also before any note has expression.
+  if found<2 and not (known and next(owning)) then return nil end
   local current,ended,pending,last,last_channel={}, {}, {}, nil, nil
   local function own_expression(n,e) own(n,e,from_ppq) end
   for i,e in ipairs(events) do
@@ -242,11 +246,14 @@ end
 -- Ableton: an edited note over the start of another note replaces it; over its
 -- end, it shortens it. Two edited notes: the earlier ends where the later
 -- starts. Overlaps no edit touched stay as they are. originals: unedited notes
--- by id. Returns the notes that remain.
+-- by id. Returns the notes that remain; a shortened note is a copy, so the
+-- notes passed in stay as they were.
 function M.resolve_overlaps(notes,originals)
+  local ends={}
+  local function ending(n) return ends[n] or n.e end
   local function edited(n)
     local o=n.id and originals[n.id]
-    return not o or o.s~=n.s or o.e~=n.e or o.pitch~=n.pitch or o.channel~=n.channel
+    return not o or o.s~=n.s or o.e~=ending(n) or o.pitch~=n.pitch or o.channel~=n.channel
   end
   local groups={}
   for _,n in ipairs(notes) do
@@ -257,14 +264,18 @@ function M.resolve_overlaps(notes,originals)
     table.sort(list,function(a,b) if a.s~=b.s then return a.s<b.s end; return edited(a) and not edited(b) end)
     for i,later in ipairs(list) do
       for j=1,i-1 do local earlier=list[j]
-        if not removed[earlier] and not removed[later] and earlier.e>later.s+1e-9 and (edited(earlier) or edited(later)) then
+        if not removed[earlier] and not removed[later] and ending(earlier)>later.s+1e-9 and (edited(earlier) or edited(later)) then
           if edited(earlier) and not edited(later) then removed[later]=true
-          else earlier.e=later.s; if earlier.e-earlier.s<1e-9 then removed[earlier]=true end end
+          else ends[earlier]=later.s; if later.s-earlier.s<1e-9 then removed[earlier]=true end end
         end
       end
     end
   end
-  local out={}; for _,n in ipairs(notes) do if not removed[n] then out[#out+1]=n end end
+  local out={}
+  for _,n in ipairs(notes) do if not removed[n] then
+    if ends[n] then local c={}; for k,v in pairs(n) do c[k]=v end; c.e=ends[n]; n=c end
+    out[#out+1]=n
+  end end
   return out
 end
 -- A new or moved note that lands on a channel another note is using gets the
@@ -384,12 +395,18 @@ local function retarget(msg,n)
   end
   return msg
 end
+-- A clip is written as MPE when it was read as MPE, or when a note carries a
+-- starting state: copies of MPE notes, and notes converted to MPE.
+function M.is_mpe(source,notes)
+  if source.mpe then return true end
+  for _,n in ipairs(notes) do if n.initial then return true end end
+  return false
+end
 function M.encode(source,notes,to_ppq,end_ppq)
   to_ppq=to_ppq or function(x) return x end
   local changed,out,originals={}, {}, {}
   for _,old in ipairs(source.notes) do originals[old.id]=old end
-  local mpe=source.mpe
-  for _,n in ipairs(notes) do if not n.id and n.initial then mpe=true end end
+  local mpe=M.is_mpe(source,notes)
   local shared_channels=source.shared or {}
   if mpe then M.allocate_channels(notes,originals,shared_channels) end
   notes=M.resolve_overlaps(notes,originals)
@@ -405,6 +422,7 @@ function M.encode(source,notes,to_ppq,end_ppq)
     local n=changed[old.id]
     if not n then identical=false; break end
     for _,k in ipairs({'s','e','pitch','vel','channel','selected','muted'}) do if n[k]~=old[k] then identical=false end end
+    if n.expr~=old.expr and n.expr and n.expr.edited then identical=false end
   end
   if identical then return source.raw end
   local function push(pos,flags,msg,order,extra)
@@ -444,15 +462,18 @@ function M.encode(source,notes,to_ppq,end_ppq)
   end end
   -- Everything a note owns travels with it. A move shifts both edges by the
   -- same amount; resizing one edge leaves the owned events where they were.
+  -- Expression edited in the editor (expression.lua, marked edited) replaces
+  -- what the source holds; its new events are placed by dt only. Otherwise
+  -- the source decides: an event edit (a CC74 lane) may have taken events over.
   local extra=#source.events+#notes*2+2
   for _,n in ipairs(notes) do
     local old=n.id and originals[n.id]
-    local list=old and old.expr or n.expr
+    local list=old and not (n.expr and n.expr.edited) and old.expr or n.expr
     if list then
       local moved=not old or (math.abs((n.s-old.s)-(n.e-old.e))<1e-9 and n.s~=old.s)
       local same=old and old.channel==n.channel and old.pitch==n.pitch
       for _,x in ipairs(list) do
-        local pos=moved and to_ppq(n.s+x.dt) or x.pos
+        local pos=(moved or not x.pos) and to_ppq(n.s+x.dt) or x.pos
         if pos>=-0.5 and pos<=limit then
           extra=extra+1
           push(pos,x.flags,same and x.msg or retarget(x.msg,n),old and x.order or extra,{owner=n})

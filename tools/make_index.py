@@ -20,6 +20,7 @@ import subprocess
 CATEGORY = 'MIDI Editor'
 MAIN = 'Fluent MIDI Editor - Open.lua'
 REPO = 'onliner10/fluent-midi-editor'
+DISCORD = 'https://discord.gg/F6TJ6SDHcV'
 
 
 def git(*args):
@@ -66,7 +67,8 @@ def entry(version):
         return f'        <source {attrs}>{escape(base + quote(path))}</source>'
 
     return [f'      <version name="{version}" author="onliner10" time="{time}">',
-            f'        <changelog><![CDATA[https://github.com/{REPO}/releases/tag/{tag}]]></changelog>',
+            f'        <changelog><![CDATA[Changes: https://github.com/{REPO}/releases/tag/{tag}\n'
+            f'Feedback and dev builds: {DISCORD}]]></changelog>',
             *[source(p) for p in [MAIN] + [f for f in files if f != MAIN]],
             '      </version>']
 

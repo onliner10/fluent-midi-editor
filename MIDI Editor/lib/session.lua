@@ -1,6 +1,10 @@
 -- Several REAPER takes on one shared project-beat timeline.
 -- All affected clips are checked before writing and share a single Undo step.
 local G={}
+-- An error for the user (a locked clip, a length below one tick): shown
+-- without the traceback that unexpected errors carry.
+local function refuse(message) error({message=message},0) end
+local function trace(err) return type(err)=='table' and err or debug.traceback(err) end
 function G.new(r,M,backend,repetitions,phrase)
   local self={clips={},active=1,notes={},ghosts={},length=16,origin=0}
   local repeats=repetitions and repetitions.new(r)
@@ -144,7 +148,7 @@ function G.new(r,M,backend,repetitions,phrase)
       for _,b in ipairs(self.clips) do b.take=r.GetActiveTake(b.item) end
       self:read()
       if match_loop then r.GetSet_LoopTimeRange2(self.project,true,true,self.position,r.TimeMap2_QNToTime(self.project,self.origin+self.length),false) end
-    end,debug.traceback)
+    end,trace)
     local restored=true
     if not ok then
       restored=repeats:restore(self.project,saved)
@@ -154,6 +158,7 @@ function G.new(r,M,backend,repetitions,phrase)
     r.PreventUIRefresh(-1); r.Undo_EndBlock2(self.project,'Fluent MIDI Editor: '..label,-1); r.UpdateArrange()
     for _,b in ipairs(self.clips) do b.take=r.GetActiveTake(b.item) end
     self:read()
+    if not ok and type(err)=='table' then return false,restored and err.message or err.message..' Use Undo.' end
     if not ok then return false,(restored and 'Clips restored. ' or 'Use Undo. ')..tostring(err) end
     return true
   end
@@ -168,13 +173,14 @@ function G.new(r,M,backend,repetitions,phrase)
         -- Applying the displayed source length can still trim a longer native
         -- looped item. Explicit length edits follow the current phrase group.
         if math.abs(current-bars)<1e-8 and (not b.looped or math.abs(length_module.bars(r,b)-bars)<1e-8) then return end
-        local native=b.looped
+        local native=b.looped and not b.single
         phrase.resize(r,b,bars,length_module)
         if native then
           repeats:set_enabled(self.project,b.item,items,true)
         end
       else
-        local ok,message=length_module.resize(r,b,bars,false,true,phrase,duplicate); assert(ok,message)
+        local ok,message=length_module.resize(r,b,bars,false,true,phrase,duplicate)
+        if not ok then refuse(message) end
       end
     end,match_loop)
   end
@@ -193,7 +199,7 @@ function G.new(r,M,backend,repetitions,phrase)
   function self:set_repeating(enabled,match_loop)
     return self:phrase_transaction(enabled and 'Turn on phrase repeat' or 'Turn off phrase repeat',function(items)
       local b=self.clips[self.active]
-      if enabled and b.looped and not b.can_extend then error('This clip already loops its MIDI source. Use Glue in REAPER first.') end
+      if enabled and b.looped and not b.can_extend then refuse('This clip already loops its MIDI source. Use Glue in REAPER first.') end
       repeats:set_enabled(self.project,b.item,items,enabled)
     end,match_loop)
   end
@@ -209,9 +215,11 @@ function G.new(r,M,backend,repetitions,phrase)
       local index=n.take_index or self.active; local b=self.clips[index]
       if not b then return false,'Select a target clip.' end
       local c=M.copy(n); c.s=c.s-b.offset_in_view; c.e=c.e-b.offset_in_view
-      -- Existing notes outside a trimmed item's view remain untouched.
+      -- Existing notes outside a trimmed item's view remain untouched. A note
+      -- moved before the first pass would be hidden (and, in a looped source,
+      -- often silent).
       local original=c.id and originals[index][c.id]
-      if c.s<-1e-7 and (not original or math.abs(c.s-original.s)>1e-7) then
+      if c.s<b.edit_source_start-1e-7 and (not original or math.abs(c.s-original.s)>1e-7) then
         return false,'A note starts before the beginning of clip '..b.track_name..'.'
       end
       split[index][#split[index]+1]=c
@@ -221,8 +229,13 @@ function G.new(r,M,backend,repetitions,phrase)
       if b:changed() then self:read(); return false,'The clip changed in REAPER. Repeat the gesture.' end
       -- These source notes were outside the editor's visible item bounds, so
       -- absence from the edited list must not be interpreted as deletion.
+      -- A duplicate or paste into the clip (new notes up to phrase_end) takes
+      -- the place of notes a shortening hid there; later ones stay hidden.
+      local pasted
+      for _,n in ipairs(split[i]) do if phrase_end and not n.id then pasted=phrase_end-b.offset_in_view end end
       for _,n in ipairs(b.source.notes) do
-        if n.s>=b.edit_source_end-1e-8 or n.e<=b.edit_source_start+1e-8 then split[i][#split[i]+1]=M.copy(n) end
+        local replaced=pasted and n.s>=b.edit_source_end-1e-8 and n.s<pasted-1e-8
+        if not replaced and (n.s>=b.edit_source_end-1e-8 or n.e<=b.edit_source_start+1e-8) then split[i][#split[i]+1]=M.copy(n) end
       end
       local ending=b:edit_ending(split[i])
       if event_edits and event_edits[i] and event_edits[i].ending then ending=math.max(ending,event_edits[i].ending) end
@@ -257,10 +270,10 @@ function G.new(r,M,backend,repetitions,phrase)
       if effect then effect.apply() end
       for _,i in ipairs(affected) do
         local done,message=self.clips[i]:commit(split[i],label,true,endings[i],event_edits and event_edits[i] and event_edits[i].raw)
-        assert(done,message)
+        if not done then refuse(message) end
       end
       if repeats then repeats:sync(self.project,items) end
-    end,debug.traceback)
+    end,trace)
     local restored=true
     if not ok then
       if effect and effect.rollback then local restored_effect=pcall(effect.rollback); if not restored_effect then restored=false end end
@@ -273,6 +286,7 @@ function G.new(r,M,backend,repetitions,phrase)
     -- SetItemStateChunk/Undo can replace take pointers; reacquire each one.
     for _,b in ipairs(self.clips) do b.take=r.GetActiveTake(b.item) end
     self:read()
+    if not ok and type(err)=='table' then return false,restored and err.message or err.message..' Use Undo.' end
     if not ok then return false,(restored and 'Clips restored. ' or 'Use Undo. ')..tostring(err) end
     return true
   end

@@ -20,8 +20,12 @@ remembered double-click action, unless you changed it later in preferences.
 Both are also in the editor's **Options** menu.
 
 Requires REAPER 7 and ReaImGui with API 0.10 (ReaPack). SWS is optional;
-it enables previewing single notes through the matching track's instrument,
-without arming tracks.
+it enables Preview, like Ableton Live's: the headphones button above the piano
+keys. With Preview on, clicking a key or a note, adding or moving notes and
+box-selecting notes all sound them for their drawn length through the matching track's instrument,
+and the keys that sound light up. While Preview is on, the instrument track
+skips media buffering and anticipative FX so notes sound at once; closing the
+editor or turning Preview off restores its settings. It never arms tracks.
 
 ## Multiple tracks
 
@@ -62,8 +66,8 @@ Other open phrases keep their length.
 Turn on **Repeat phrase** on a shorter clip to make it play until the end of the longest
 clip in the current group. Existing REAPER repeats (Loop source) are
 detected automatically. REAPER turns Loop source on for every new MIDI clip; a clip
-that plays one pass of its source is a regular clip, and its loop follows the
-clip length when the length changes. A new clip that is still empty and was stretched
+that plays one pass of its source is a regular clip, also when its start was trimmed
+in the arrange view, and its loop follows the clip length when the length changes. A new clip that is still empty and was stretched
 in the arrange view is a regular clip too: a 1-bar clip stretched to 2 bars opens as 2
 editable bars, and the first note written into it lengthens its source.
 Opening the editor alone changes neither clips nor MIDI.
@@ -89,11 +93,13 @@ Opening such a copy in Fluent MIDI Editor takes you to its original.
 Shortening or lengthening the phrase rebuilds the copies; **Ctrl+D** duplicates the edited
 notes and may lengthen the original, reducing the number of automatic repeats accordingly.
 
-With repeat on, lengthening the phrase pulls the next repeats into editing.
-Without repeat, lengthening adds empty space. Shortening hides notes past the end but keeps
-them in the MIDI source — they reappear when you lengthen it again. Editing visible notes
+With repeat on, lengthening the phrase pulls the next repeats into editing: the phrase
+holds what played there. Without repeat, lengthening adds empty space. Shortening hides
+notes past the end but keeps them in the MIDI source — without repeat, they reappear when
+you lengthen it again. Editing visible notes
 does not delete the hidden part and does not automatically restore the previous length.
-Use **Ctrl+D** to duplicate content.
+Use **Ctrl+D** to duplicate content. A duplicate or paste that lands in the hidden part
+replaces the notes hidden there; hidden notes past it stay.
 
 Repeats end no later than the next independent clip on the same
 track. The last pass may be shorter. The limit is 256 repeats per phrase.
@@ -178,7 +184,8 @@ rate. Existing CC can be edited in the lane. Native shapes other than linear
 or step need the **Import current CC as points** button, which
 replaces their interpolation with segments between points. When the editor detects
 a mismatch between the stored points and CC changed from outside, it also
-offers the import. Pitch bend, MPE and 14-bit CC have no dedicated editor.
+offers the import. Channel pitch bend and 14-bit CC have no dedicated lane;
+per-note MPE expression has its own editor (see "Editing MPE expression").
 
 ## What travels with a note
 
@@ -204,19 +211,73 @@ starts and its release tail:
 
 Channels that play chords (a zone's master channel, or an ordinary non-MPE
 clip) are left as they were: their pitch bend and CC stay at their time.
-Expression is preserved, not drawn: there is no per-note bend editor yet.
 A CC74 modulation lane on an MPE channel replaces the notes' own timbre there.
 
 Two notes of one pitch cannot sound together on one channel. As in Ableton, a note
 you move, draw or paste over the start of another note replaces it, and over its end
 shortens it.
 
+## Editing MPE expression
+
+As in Ableton Live's Note Expression view, press **MPE** in the toolbar (**E**)
+to edit each note's own pitch bend, slide (CC74) and pressure:
+
+- **Pitch** is drawn on the notes: one row is one semitone, and the line through
+  the middle of a note is no bend. Set the instrument's bend range under
+  *MPE expression* in the sidebar (MPE synths default to 48 semitones).
+- **Slide** and **Pressure** are tabs in the lane under the piano roll, next to
+  Velocity. Every note's line is shown there; the selected notes' are bright.
+
+Selected notes' envelopes are bright and editable. A line under the pointer
+shows where a point would go and its value; the line of an unselected note
+that already bends, and any line in the Slide or Pressure lane, lights up and
+can be grabbed directly: that selects its note.
+
+| Gesture | Action |
+| :- | :- |
+| Drag a line | Add a point there and move it |
+| Drag a point | Move it in time and value; the value shows next to it |
+| Click a point | Select it (orange) |
+| ↑ / ↓ | Nudge the selected point a semitone (pitch, to whole semitones) or 8 steps; with Shift a tenth of a semitone or one step |
+| ← / → | Move the selected point by a grid step; with Shift by 1/64 beat |
+| Delete, or double-click a point | Delete it (the first point resets the starting value) |
+| Escape | Deselect the point |
+| Ctrl + drag a line or point | Move the whole envelope of every selected note up or down |
+| Shift while dragging | Move in one direction only |
+| Alt while dragging pitch | Snap to semitones |
+| Right-click a line or point | Simplify, clear, delete the point |
+| Draw (B) + drag | Draw freehand: pitch over the note under the pointer, slide or pressure over every selected note |
+| Fold | Hides pitch envelopes, as in Ableton |
+
+**Simplify** (right-click a line or a note) turns a dense recording into a few
+smooth points that are easy to reshape, staying within about a quarter of a
+semitone (or 6 of 127) of what was played.
+
+A selected note's flat pitch line runs through its middle. Note gestures keep
+working there: its edges still resize the note, Alt + drag and Ctrl + drag on a
+flat line still set velocity and copy the note (on a bent line they snap to
+semitones and move the whole bend), and right-clicking the line opens the note
+menu. To move the note, grab it above or below the line. Each
+finished gesture and each nudge is one Undo step.
+
+The editor shows the MIDI as breakpoints: a value that holds and then jumps is
+two points, a recorded or drawn slope is a line. Lines are written as small
+steps (1/128 of the range for slide and pressure, about 1/2000 for pitch), and a
+dense recording is shown with fewer points, within a few steps of what was
+recorded; it is only rewritten for an envelope you edit.
+
+**A clip that is not MPE** (all notes on one channel) can be converted with
+**Convert to MPE** in the sidebar. Each sounding note gets its own channel
+(2-16, the lower MPE zone; at most 15 notes at once), so each can bend on its
+own. The part's own bend, pressure and CCs go to channel 1, the zone's master
+channel, where they keep acting on every note, as MPE defines. Switch the instrument to MPE mode afterwards.
+
 ## Cheat sheet
 
 | Gesture / shortcut | Action |
 | --- | --- |
 | Double-click empty cell / note | Add / delete note |
-| B | Draw; dragging creates more notes |
+| B | Draw; dragging creates more notes, one per grid cell as drawn (zoomed out, cells grow) |
 | Drag a note / edge | Position and pitch / start or end |
 | Rectangle with left or right button | Select notes and a time range; right works while drawing too |
 | Shift + click / drag on the ruler | Scrub: play from that point |
@@ -232,6 +293,7 @@ shortens it.
 | Drag a velocity marker | Velocity; a selected group keeps its differences |
 | Velocity slider | One value for selected notes, or the value for new notes |
 | F / 0 | Fold to used pitches (keeps the zoom) / mute notes |
+| E | MPE editing: pitch on the notes, slide and pressure in the lane |
 | Ctrl+1 / 2 / 3 / 4 | Finer / coarser grid / triplets / snap |
 | Alt while resizing an edge | Temporarily invert snap |
 | Ctrl + wheel | Zoom time around the pointer |
@@ -268,7 +330,8 @@ ones with a single source loop enabled, grow when the copy extends past their en
 - Pooled MIDI keeps sharing its source as in REAPER. Changing
   two clips from the same pool at once is rejected; edit only one of them.
 - The clipboard is internal and shared by the clips in the current window.
-- No Chance or MPE editing.
+- No Chance editing. MPE expression has no curved segments: points are joined by
+  straight lines.
 
 ## Development
 

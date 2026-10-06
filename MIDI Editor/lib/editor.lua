@@ -4,6 +4,7 @@ function E.run(r,initial_item,dir)
   package.path=r.ImGui_GetBuiltinPath()..'/?.lua;'..package.path
   local ImGui=require('imgui')('0.10')
   local M=dofile(dir..'model.lua')
+  local X=dofile(dir..'expression.lua').new(M)
   local modulation=dofile(dir..'modulation.lua')
   local L=dofile(dir..'length.lua')
   local note_layout=dofile(dir..'note_layout.lua')
@@ -17,14 +18,17 @@ function E.run(r,initial_item,dir)
   local C=ui.C
   local black_keys={[1]=true,[3]=true,[6]=true,[8]=true,[10]=true}
   local S={notes={},start=0,span=16,row=53,rowh=19,grid=0.25,triplet=false,snap=true,
-    draw=false,fold=false,velocity=100,channel=0,
+    draw=false,fold=false,velocity=100,channel=0,bendRange=48,exprLane='vel',
+    expression=r.GetExtState('FluentMIDIEditor','expression')=='1',
     cursor=0,follow=false,preview=audition.available,trackFollow=true,range=nil,drag=nil,clipboard=nil,
     status='Ready',lastPoll=0,fit=true,rows={},help=false,open=true,lane=105,focus=true,
     matchLoop=r.GetExtState('FluentMIDIEditor','lengthLoop')~='0',lengthEditing=false}
-  local saved={'grid','velocity','channel','rowh','lane'}
+  local saved={'grid','velocity','channel','rowh','lane','bendRange'}
   for _,k in ipairs(saved) do S[k]=tonumber(r.GetExtState('FluentMIDIEditor',k)) or S[k] end
   S.grid=M.clamp(S.grid,1/128,4); S.velocity=M.clamp(S.velocity,1,127)
   S.channel=M.clamp(S.channel,0,15); S.rowh=M.clamp(S.rowh,10,42); S.lane=M.clamp(S.lane,65,220)
+  S.bendRange=M.clamp(math.floor(S.bendRange),1,96)
+  if S.expression then S.exprLane='tb' end
   -- The row height chosen with Alt + wheel; fitting the view does not change it.
   S.userRowh=S.rowh
   local token=tostring(r.time_precise())
@@ -45,13 +49,27 @@ function E.run(r,initial_item,dir)
         visible=L.format(L.span_bars(r,B.project,B.origin+b.view_start,B.origin+b.view_end)),
         ending=ending,extent=L.format(L.span_bars(r,B.project,b.item_start,B.origin+ending))}
       info.label=L.format(info.phrase); S.clipInfo[b]=info
+      -- One MIDI tick in beats: the resolution of written expression.
+      info.tick=1/math.max(1,b.to_ppq(b.edit_source_start+1)-b.to_ppq(b.edit_source_start))
     end
     return info
   end
   r.SetExtState('FluentMIDIEditor','instance',token,false)
   local function stop_preview() audition:stop() end
-  local function preview(pitch)
-    if S.preview and B:valid() then audition:play(B.project,B.track,pitch,S.velocity,S.channel) end
+  -- Ableton's Preview: with it on, selecting, adding or moving notes sounds them.
+  -- Takes one pitch, or a list of notes to play as a chord. layer adds them to
+  -- the notes already sounding instead of cutting those off.
+  local function preview(pitch,notes,hold,layer)
+    if not (S.preview and B:valid()) then return end
+    local list={}
+    for _,n in ipairs(notes or {{pitch=pitch,vel=S.velocity,channel=S.channel,s=0,e=S.grid}}) do
+      -- Each note sounds for the length it is drawn with.
+      local b=B.clips[n.take_index or B.active]
+      local ending=b and math.min(n.e,b.view_end) or n.e
+      local sec=r.TimeMap2_QNToTime(B.project,B.origin+ending)-r.TimeMap2_QNToTime(B.project,B.origin+n.s)
+      list[#list+1]={pitch=n.pitch,vel=n.vel or S.velocity,channel=n.channel or S.channel,sec=hold and 30 or sec>0 and sec or 0.1}
+    end
+    audition:play(B.project,B.track,list,hold,layer)
   end
   local function rows()
     local used={}; for _,n in ipairs(S.notes) do used[n.pitch]=true end
@@ -95,6 +113,12 @@ function E.run(r,initial_item,dir)
     local notes=M.copy(S.notes); fn(notes); return commit(notes,label,phrase_end and phrase_end())
   end
   local function grid() return S.grid*(S.triplet and 2/3 or 1) end
+  -- The grid as drawn: zoomed out, steps double until lines are 9 px apart.
+  -- Drawing paints one note per drawn cell, not thousands too thin to see.
+  local function shown_grid(width)
+    local step=grid(); while width>0 and width/S.span*step<9 and step<65536 do step=step*2 end
+    return step
+  end
   local function mods()
     return ImGui.IsKeyDown(ctx,ImGui.Mod_Ctrl),ImGui.IsKeyDown(ctx,ImGui.Mod_Shift),ImGui.IsKeyDown(ctx,ImGui.Mod_Alt)
   end
@@ -193,6 +217,128 @@ function E.run(r,initial_item,dir)
     S.fit=false
   end
   local function toggle_fold() S.fold=not S.fold; rows(); fit(false,true) end
+  -- MPE expression, as in Ableton's Note Expression view: pitch bend drawn on
+  -- the notes, slide (CC74) and pressure in the lane below. Only the selected
+  -- notes' envelopes are editable.
+  local EXPRESSION_LANES={{'vel','Velocity'},{'tb','Slide'},{'at','Pressure'}}
+  local EXPRESSION_LABELS={pb='Edit pitch bend',tb='Edit slide',at='Edit pressure'}
+  local function toggle_expression()
+    S.expression=not S.expression
+    if not S.expression then S.exprLane='vel' elseif S.exprLane=='vel' then S.exprLane='tb' end
+    S.exprPoint=nil
+    r.SetExtState('FluentMIDIEditor','expression',S.expression and '1' or '0',true)
+    S.status=S.expression and 'MPE: select a note to edit its pitch, slide and pressure.' or 'MPE editing off.'
+  end
+  local function expression_editable(n)
+    local b=n and not n.ghost and B.clips[n.take_index]
+    return b and X.editable(n,b.source)
+  end
+  local function note_tick(n) return clip_info(B.clips[n.take_index]).tick end
+  -- The envelope as drawn: a gesture in progress shows its draft.
+  local function envelope(i,n,dimension)
+    local d=S.drag
+    if d and d.kind=='expr' and d.note==i and d.dim==dimension then return d.points end
+    if d and (d.kind=='expr_draw' or d.kind=='expr_offset') and d.dim==dimension and d.preview[i] then return d.preview[i] end
+    return X.envelope(n,dimension,note_tick(n))
+  end
+  -- Write new envelopes: {[note index]=points} of one dimension, one Undo step.
+  local function write_expression(changes,dimension,label)
+    if not B:valid() then return end
+    local notes=M.copy(S.notes)
+    for i,points in pairs(changes) do local n=notes[i]
+      if n then n.expr,n.initial=X.write(n,dimension,points,note_tick(n)) end
+    end
+    return commit(notes,label or EXPRESSION_LABELS[dimension])
+  end
+  -- The selected breakpoint, kept by its note and place so it survives the
+  -- re-read after each write. Arrows nudge it, Delete removes it.
+  local function remember_point(n,dimension,p)
+    S.exprPoint=p and {take=n.take_index,pitch=n.pitch,s=n.s,dim=dimension,t=p.t,v=p.v} or nil
+  end
+  local function resolve_point()
+    local h=S.exprPoint; if not (h and S.expression) then return end
+    for i,n in ipairs(S.notes) do
+      if n.take_index==h.take and n.pitch==h.pitch and math.abs(n.s-h.s)<1e-7 and n.selected and expression_editable(n) then
+        local best,dist
+        for k,p in ipairs(X.envelope(n,h.dim,note_tick(n))) do
+          local dd=math.abs(p.t-h.t)*1000+math.abs(p.v-h.v)/X.MAX[h.dim]*10
+          if not dist or dd<dist then best,dist=k,dd end
+        end
+        if dist and dist<5 then return {note=i,dim=h.dim,point=best} end
+      end
+    end
+    S.exprPoint=nil
+  end
+  local function semitone_value(semis) return 8192+semis/S.bendRange*8192 end
+  -- Up / Down: a semitone (pitch) or 8 steps; Shift: a tenth of a semitone or
+  -- one step. Left / Right: a grid step; Shift: 1/64 beat.
+  local function nudge_point(h,dx,dy,fine)
+    local n=S.notes[h.note]
+    local points=M.copy(X.envelope(n,h.dim,note_tick(n))); local p=points[h.point]
+    if not p then return end
+    if dy~=0 then
+      if h.dim=='pb' then
+        local semis=(p.v-8192)/8192*S.bendRange
+        -- Stored bends are whole 14-bit steps: 2 semitones reads 1.998.
+        semis=fine and semis+dy*.1 or (dy>0 and math.floor(semis+.02)+1 or math.ceil(semis-.02)-1)
+        p.v=semitone_value(semis)
+      else p.v=p.v+dy*(fine and 1 or 8) end
+      p.v=M.clamp(p.v,0,X.MAX[h.dim])
+    end
+    if dx~=0 and h.point>1 then
+      local after=points[h.point+1]
+      p.t=M.clamp(p.t+dx*(fine and 1/64 or grid()),points[h.point-1].t,after and after.t or n.e-n.s)
+    end
+    remember_point(n,h.dim,p)
+    write_expression({[h.note]=points},h.dim)
+  end
+  -- The first point is the note's starting value: deleting it resets it.
+  local function delete_point(h)
+    local n=S.notes[h.note]
+    local points=M.copy(X.envelope(n,h.dim,note_tick(n)))
+    if h.point>1 then table.remove(points,h.point) else points[1].v=X.NEUTRAL[h.dim] end
+    S.exprPoint=nil
+    write_expression({[h.note]=points},h.dim,'Delete '..X.NAMES[h.dim]..' point')
+  end
+  -- Simplify: dense recordings become a few smooth points, easy to edit.
+  local function simplify_expression(only)
+    local notes,count=M.copy(S.notes),0
+    for _,n in ipairs(notes) do if n.selected and expression_editable(n) then
+      for _,dimension in ipairs(X.DIMENSIONS) do if not only or only==dimension then
+        local points=X.envelope(n,dimension,note_tick(n))
+        if #points>2 then n.expr,n.initial=X.write(n,dimension,X.simplify(points,dimension),note_tick(n)); count=count+1 end
+      end end
+    end end
+    S.exprPoint=nil
+    if count==0 then S.status='Nothing to simplify in the selected notes.'; return end
+    commit(notes,'Simplify note expression')
+  end
+  local function clear_expression()
+    local notes,count=M.copy(S.notes),0
+    for _,n in ipairs(notes) do if n.selected and expression_editable(n) then
+      for _,dimension in ipairs(X.DIMENSIONS) do
+        n.expr,n.initial=X.write(n,dimension,{{t=0,v=X.NEUTRAL[dimension]}},note_tick(n))
+      end
+      count=count+1
+    end end
+    if count==0 then S.status='Select MPE notes to clear their expression.'; return end
+    commit(notes,'Clear note expression')
+  end
+  -- A plain part gets one MPE channel per sounding note (lower zone).
+  local function convert_to_mpe()
+    local b=B.clips[B.active]; if not b or b.source.mpe then return end
+    local notes,part=M.copy(S.notes),{}
+    for _,n in ipairs(notes) do if n.take_index==B.active then part[#part+1]=n end end
+    if #part==0 then S.status='Add notes to the clip first.'; return end
+    local done,info=X.make_mpe(part)
+    if not done then S.status=info; return end
+    -- The part's own bend, pressure and CCs go to the master channel.
+    local raw=X.to_master(b.source,info)
+    if commit(notes,'Convert clip to MPE',nil,raw and {[B.active]={raw=raw}} or nil) then
+      S.channel=1
+      S.status=b.track_name..': one channel per note (2-16). Set the instrument to MPE mode.'
+    end
+  end
   local function transport()
     if not B.project or r.EnumProjects(-1,'')~=B.project then return end
     if r.GetPlayStateEx(B.project)&1~=0 then r.OnStopButtonEx(B.project) else r.OnPlayButtonEx(B.project) end
@@ -220,10 +366,20 @@ function E.run(r,initial_item,dir)
       S.lengthInputUsed or ImGui.IsAnyItemActive(ctx) and not S.drag then return end
     local ctrl,shift,alt=mods()
     if key('Escape') then
-      if S.drag then S.notes=S.drag.before or S.notes; S.drag=nil else deselect(); S.range=nil end
+      if S.drag then S.notes=S.drag.before or S.notes; S.drag=nil
+      elseif S.exprPoint then S.exprPoint=nil
+      else deselect(); S.range=nil end
       return
     end
     if S.drag then return end
+    -- A selected expression point takes the arrows and Delete from the notes.
+    local point=S.exprSelected
+    if point and not ctrl then
+      if key('Delete') or key('Backspace') then delete_point(point); return end
+      local dx=(key('RightArrow',true) and 1 or 0)-(key('LeftArrow',true) and 1 or 0)
+      local dy=(key('UpArrow',true) and 1 or 0)-(key('DownArrow',true) and 1 or 0)
+      if dx~=0 or dy~=0 then nudge_point(point,dx,dy,shift); return end
+    end
     if key('Space') then transport() end
     if ctrl then
       if key('A') then S.range=nil; for _,n in ipairs(S.notes) do n.selected=not shift or not n.selected end end
@@ -242,6 +398,7 @@ function E.run(r,initial_item,dir)
     end
     if key('B') then S.draw=not S.draw
     elseif key('F') then toggle_fold()
+    elseif key('E') then toggle_expression()
     elseif key('X') then fit(false,false,true)
     elseif key('Z') then fit(true,false,true)
     elseif key('D') and shift then duplicate()
@@ -293,6 +450,8 @@ function E.run(r,initial_item,dir)
     ui:same_line()
     if ui:toggle('Fold',S.fold,'F: show only the pitches in use') then toggle_fold() end
     ui:same_line()
+    if ui:toggle('MPE',S.expression,'E: edit MPE expression. Pitch bend on the notes, slide and pressure in the lane below.') then toggle_expression() end
+    ui:same_line()
     if ui:toggle('Snap',S.snap,'Ctrl+4: snap to the grid. Alt inverts it while dragging.') then S.snap=not S.snap end
     ui:same_line()
     local label='1/'..math.floor(4/S.grid+0.5)..(S.triplet and ' T' or '')
@@ -324,6 +483,9 @@ function E.run(r,initial_item,dir)
         r.Main_OnCommand(40153,0)
       end
       if ImGui.MenuItem(ctx,'Shortcuts and help') then S.help=not S.help end
+      ui:separator()
+      if ImGui.MenuItem(ctx,'Discord: feedback and dev builds') then integration.open_url(r,integration.links.discord) end
+      if ImGui.MenuItem(ctx,'Report a bug on GitHub') then integration.open_url(r,integration.links.issues) end
       ImGui.EndPopup(ctx)
     end
   end
@@ -334,9 +496,9 @@ function E.run(r,initial_item,dir)
     if not S.lengthEdit or S.lengthEdit.item~=b.item then
       S.lengthEdit={item=b.item,text=L.format(value)}; S.lengthEditing=false; S.lengthError=nil
     elseif not S.lengthEditing then S.lengthEdit.text=L.format(value) end
-    local function apply(bars,duplicate)
+    local function apply(length,duplicate)
       local showWholeGroup=S.start<=.25 and S.start+S.span>=(B.view_length or B.length)
-      local ok,message=B:resize_phrase(L,bars,S.matchLoop,duplicate)
+      local ok,message=B:resize_phrase(L,length,S.matchLoop,duplicate)
       if ok then
         S.notes=M.copy(B.notes or {}); rows(); S.range=nil
         if showWholeGroup then S.start=0; S.span=math.max(1,(B.view_length or B.length)+.5) end
@@ -400,6 +562,21 @@ function E.run(r,initial_item,dir)
   local SHORTCUTS={{'B','Draw'},{'F','Fold to used pitches'},{'Z','Zoom to selection'},{'X','Show all clips'},
     {'0','Mute notes'},{'Ctrl+4','Snap'},{'Ctrl+D','Duplicate time'},{'Shift+↑↓','Octave'},
     {'Right-click','Pick overlapping'},{'Ctrl+wheel','Zoom time'},{'Alt+wheel','Row height'},{'Shift+wheel','Scroll time'}}
+  local EXPRESSION_SHORTCUTS={{'Drag a line','Add a point'},{'Drag a point','Move it'},{'Click a point','Select it'},
+    {'Arrows','Nudge the point'},{'Double-click','Delete a point'},{'Ctrl+drag','Whole envelope'},
+    {'Shift / Alt','Straight / semitones'},{'B+drag','Draw'},{'E','MPE editing'}}
+  local function expression_controls()
+    local b=B.clips[B.active]
+    ui:separator()
+    ui:heading('MPE expression')
+    if b.source.mpe then
+      local changed,v=ui:input_int('semitones##bend_range',S.bendRange,'wide','Pitch bend range of the instrument, in semitones. MPE synths default to 48.')
+      if changed then S.bendRange=M.clamp(v,1,96) end
+    else
+      ui:wrapped('This clip is not MPE: its notes share a channel and its expression.')
+      if ui:button('Convert to MPE','Give every sounding note its own channel (2-16), so each can bend, slide and press on its own. Set the instrument to MPE mode.','fill') then convert_to_mpe() end
+    end
+  end
   local function sidebar(height)
     ui:panel('Inspector',ui.size.sidebar,height,function()
       ui:heading('Tracks',true)
@@ -426,13 +603,14 @@ function E.run(r,initial_item,dir)
       if released and count>0 then
         edit('Change velocity',function(notes) for _,n in ipairs(notes) do if n.selected then n.vel=S.velocity end end end)
       end
-      if audition.available then _,S.preview=ui:switch('Preview notes',S.preview) end
+      if S.expression and B.clips[B.active] then expression_controls() end
       -- The cheat sheet only where it fits; Options > Shortcuts and help has it too.
+      local hints=S.expression and EXPRESSION_SHORTCUTS or SHORTCUTS
       local _,room=ImGui.GetContentRegionAvail(ctx)
-      if room>=ui:key_hints_height(SHORTCUTS)+ui:line_height()+3*ui.space.sm then
+      if room>=ui:key_hints_height(hints)+ui:line_height()+3*ui.space.sm then
         ui:separator()
         ui:heading('Shortcuts')
-        ui:key_hints(SHORTCUTS)
+        ui:key_hints(hints)
       end
     end,true)
   end
@@ -540,11 +718,148 @@ function E.run(r,initial_item,dir)
         return ta==tb and a<b or ta<tb
       end) end
     end
+    -- MPE expression. Pitch: one semitone is one row, around the note's
+    -- centre. Slide and pressure: 0-127 over the lane's height.
+    local expr_lane=S.expression and S.exprLane~='vel' and S.exprLane or nil
+    local show_pitch=S.expression and not S.fold
+    local function pitch_y(n,v)
+      local ny,ey=vertical(n); if not ny then return end
+      return (ny+ey)/2-(v-8192)/8192*S.bendRange*S.rowh
+    end
+    local function lane_y(v) return A.bottom-4-v/127*(A.vh-10) end
+    local function semitones(v) return (v-8192)/8192*S.bendRange end
+    local expr_notes={}
+    if S.expression then for i,n in ipairs(S.notes) do
+      if n.selected and n.e>S.start and n.s<S.start+S.span and expression_editable(n) then expr_notes[#expr_notes+1]=i end
+    end end
+    -- The breakpoint, or else the line, of a note under the pointer. select:
+    -- the candidates are not selected yet; grabbing one selects it.
+    local function probe(dimension,ymap,candidates,select)
+      local best,dist,segment
+      -- Low rows leave room to grab the note above and below its pitch line.
+      local band=dimension=='pb' and math.min(4,S.rowh/5) or 4
+      for _,i in ipairs(candidates) do local n=S.notes[i]
+        local points=envelope(i,n,dimension)
+        for k,p in ipairs(points) do
+          local yy=ymap(n,p.v)
+          local dd=yy and math.abs(tx(n.s+p.t)-mx)+math.abs(yy-my)
+          if dd and dd<8 and (not dist or dd<dist) then best,dist={note=i,dim=dimension,point=k,select=select,d=dd},dd end
+        end
+        local t=tq(mx)-n.s
+        if not segment and t>=0 and t<=n.e-n.s then
+          local v=X.value(points,t); local yy=ymap(n,v)
+          if yy and math.abs(yy-my)<band then segment={note=i,dim=dimension,t=t,v=v,select=select,flat=X.flat(points,dimension)} end
+        end
+      end
+      return best or segment
+    end
+    local expr_hit
+    S.exprSelected=resolve_point()
+    -- A point stays selected only while its envelope is on screen.
+    local shown=S.exprSelected and (S.exprSelected.dim=='pb' and show_pitch or S.exprSelected.dim==expr_lane)
+    if S.exprSelected and not shown then S.exprPoint=nil; S.exprSelected=nil end
+    if S.expression and hovered and not S.drag then
+      -- Selected notes first. A bent note's line, and any line in the lane,
+      -- can be grabbed without selecting the note first; a flat pitch line of
+      -- an unselected note leaves the note to be moved.
+      if in_grid and show_pitch then
+        expr_hit=probe('pb',pitch_y,expr_notes)
+        if not expr_hit then
+          local others={}
+          for _,entry in ipairs(visible.notes) do local i,n=entry.i,entry.n
+            if not n.selected and expression_editable(n) and not X.flat(envelope(i,n,'pb'),'pb') then others[#others+1]=i end
+          end
+          expr_hit=probe('pb',pitch_y,others,true)
+        end
+      elseif in_vel and expr_lane then
+        local function y_of(_,v) return lane_y(v) end
+        expr_hit=probe(expr_lane,y_of,expr_notes)
+        if not expr_hit then
+          local others={}
+          for i,n in ipairs(S.notes) do
+            if not n.selected and n.e>S.start and n.s<S.start+S.span and expression_editable(n) then others[#others+1]=i end
+          end
+          expr_hit=probe(expr_lane,y_of,others,true)
+        end
+      end
+    end
+    -- Note gestures keep their place on the notes: an edge still resizes
+    -- (except right on a point), Alt still sets velocity and Ctrl still
+    -- copies on a flat line (on a bent one they snap to semitones and move
+    -- the whole bend), and another note's body is not taken over by a
+    -- line crossing it.
+    if expr_hit and expr_hit.dim=='pb' and hit then
+      local edge=grabbed_edge(S.notes[hit])
+      if edge and not (expr_hit.point and expr_hit.d<5) then expr_hit=nil
+      elseif not expr_hit.point and expr_hit.flat and (alt or ctrl) then expr_hit=nil
+      elseif expr_hit.select and hit~=expr_hit.note then expr_hit=nil end
+    end
+    local function draw_envelope(n,points,ymap,color,handles,width)
+      local px,py
+      local function to(t,v)
+        local xx,yy=tx(n.s+t),ymap(v); if not yy then return end
+        if px then line(px,py,xx,yy,color,width) end; px,py=xx,yy
+      end
+      for _,p in ipairs(points) do to(p.t,p.v) end
+      to(n.e-n.s,points[#points].v)
+      -- Dense recorded points share a handle on screen; each stays editable.
+      if handles then
+        local last_x,last_y
+        for k,p in ipairs(points) do
+          local xx,yy=tx(n.s+p.t),ymap(p.v)
+          if yy and (k==#points or not last_x or math.abs(xx-last_x)+math.abs(yy-last_y)>=7) then
+            ImGui.DrawList_AddCircleFilled(dl,xx,yy,3.5,color); last_x,last_y=xx,yy
+          end
+        end
+      end
+    end
+    -- A point being dragged, hovered or selected: a ring and its value.
+    local function mark_point(dimension,xx,yy,v)
+      ImGui.DrawList_AddCircle(dl,xx,yy,7,C.note_selected,0,1.5)
+      local label=dimension=='pb' and string.format('%+.2f st',semitones(v)) or tostring(math.floor(v+.5))
+      ImGui.DrawList_AddRectFilled(dl,xx+8,yy-21,xx+12+ui:text_width(label),yy-5,ui.alpha(C.well,0xD0),3)
+      text(xx+10,yy-20,C.text,label)
+    end
+    local function point_at(h)
+      local n=S.notes[h.note]; local points=envelope(h.note,n,h.dim); local p=points[h.point]
+      if not p then return end
+      return tx(n.s+p.t),h.dim=='pb' and pitch_y(n,p.v) or lane_y(p.v),p.v
+    end
+    -- Freehand drawing replaces the envelope over the drawn time span.
+    -- inner: the drawn points inside the note, sorted by time.
+    local function drawn(original,n,inner)
+      local length=n.e-n.s
+      if #inner==0 then return nil end
+      local a,z=inner[1].t,inner[#inner].t
+      local out={}
+      for _,p in ipairs(original) do if p.t<a-1e-9 then out[#out+1]={t=p.t,v=p.v} end end
+      if a>1e-9 then out[#out+1]={t=a,v=X.value(original,a)} end
+      for _,p in ipairs(inner) do out[#out+1]=p end
+      if z<length-1e-9 then
+        out[#out+1]={t=z,v=X.value(original,z)}
+        for _,p in ipairs(original) do if p.t>z+1e-9 then out[#out+1]={t=p.t,v=p.v} end end
+      end
+      if out[1].t>1e-9 then table.insert(out,1,{t=0,v=X.value(original,0)}) end
+      return out
+    end
     -- A panel like the others: rounded, the header rows on the panel colour.
     ImGui.DrawList_AddRectFilled(dl,x,y,x+w,y+h,C.bg,6)
     ImGui.DrawList_AddRectFilled(dl,x,y,x+w,A.gy,C.panel,6,ImGui.DrawFlags_RoundCornersTop)
-    text(x+9,A.ry+5,C.faint,'NOTE')
-    ui:anchor('ruler',A.gx,A.ry,x+w,A.gy); ui:anchor('notes',A.gx,A.gy,x+w,A.gy+A.gh)
+    local phones={x1=x+16,y1=A.ry+3,x2=A.gx-16,y2=A.gy-3}
+    local over_phones=audition.available and inside(mx,my,x,A.ry,A.gx,A.gy)
+    if audition.available then
+      ImGui.DrawList_AddRectFilled(dl,phones.x1,phones.y1,phones.x2,phones.y2,
+        S.preview and ui.alpha(C.accent,0x30) or over_phones and C.hover or C.raised,4)
+      ImGui.DrawList_AddRect(dl,phones.x1,phones.y1,phones.x2,phones.y2,S.preview and ui.alpha(C.accent,0x90) or C.line,4)
+      -- Headphones: a band over two ear cups.
+      local ink=S.preview and C.accent_text or C.muted
+      local cx,cy=(phones.x1+phones.x2)/2,(phones.y1+phones.y2)/2+2
+      ImGui.DrawList_PathArcTo(dl,cx,cy,6,math.pi,2*math.pi); ImGui.DrawList_PathStroke(dl,ink,0,1.5)
+      ImGui.DrawList_AddRectFilled(dl,cx-8,cy,cx-4,cy+5,ink,1.5)
+      ImGui.DrawList_AddRectFilled(dl,cx+4,cy,cx+8,cy+5,ink,1.5)
+      ui:anchor('preview',phones.x1,phones.y1,phones.x2,phones.y2)
+    else text(x+9,A.ry+5,C.faint,'NOTE') end
+    ui:anchor('ruler',A.gx,A.ry,x+w,A.gy); ui:anchor('notes',A.gx,A.gy,x+w,A.gy+A.gh); ui:anchor('lane',A.gx,A.vy,x+w,A.bottom)
     ImGui.DrawList_PushClipRect(dl,x,A.gy,x+w,A.gy+A.gh,true)
     if S.pitchTrack~=B.track or S.pitchChannel~=S.channel or S.pitchPoll~=S.lastPoll then
       S.pitchNames={}; S.pitchTrack=B.track; S.pitchChannel=S.channel; S.pitchPoll=S.lastPoll
@@ -552,8 +867,10 @@ function E.run(r,initial_item,dir)
     for j=first_row,last_row do
       local p=S.rows[j]; local yy=py(p); local black=black_keys[p%12]
       local background=black and C.row_black or C.row_white
+      local lit=audition:sounding(p)
       rect(A.gx,yy,x+w,yy+S.rowh,background)
-      rect(x,yy,A.gx-1,yy+S.rowh,black and C.key_black or C.key_white)
+      if lit then rect(A.gx,yy,x+w,yy+S.rowh,ui.alpha(C.accent,0x28)) end
+      rect(x,yy,A.gx-1,yy+S.rowh,lit and C.accent or black and C.key_black or C.key_white)
       line(x,yy+S.rowh-1,x+w,yy+S.rowh-1,C.row_line)
       if S.rowh>=13 then
         local name=S.pitchNames[p]
@@ -566,12 +883,12 @@ function E.run(r,initial_item,dir)
           S.pitchNames[p]=name
         end
         ImGui.DrawList_PushClipRect(dl,x+5,yy,A.gx-3,yy+S.rowh,true)
-        text(x+8,yy+math.max(0,(S.rowh-14)/2),C.text,name)
+        text(x+8,yy+math.max(0,(S.rowh-14)/2),lit and C.on_accent or C.text,name)
         ImGui.DrawList_PopClipRect(dl)
       end
     end
     ImGui.DrawList_PopClipRect(dl)
-    local step=grid(); while A.gw/S.span*step<9 do step=step*2 end
+    local step=shown_grid(A.gw)
     if S.meterSource~=B.notes then
       S.meterSource=B.notes; S.beatsPerBar=4
       local num,den=r.TimeMap_GetTimeSigAtTime(B.project,B.position or 0)
@@ -665,30 +982,98 @@ function E.run(r,initial_item,dir)
     end
     for _,entry in ipairs(visible.ghosts) do draw_note(entry.n) end
     for _,entry in ipairs(visible.notes) do draw_note(entry.n) end
+    if show_pitch then
+      for _,entry in ipairs(visible.notes) do local i,n=entry.i,entry.n
+        local editable=n.selected and expression_editable(n)
+        local points=envelope(i,n,'pb')
+        if editable or not X.flat(points,'pb') then
+          draw_envelope(n,points,function(v) return pitch_y(n,v) end,editable and C.note_selected or ui.alpha(C.text,0x80),editable,editable and 2 or 1)
+        end
+      end
+    end
     if S.drag and S.drag.kind=='select' then
       local d=S.drag
       ImGui.DrawList_AddRect(dl,math.min(d.mx,mx),math.min(d.my,my),math.max(d.mx,mx),math.max(d.my,my),C.accent,0,0,1)
     end
     ImGui.DrawList_PopClipRect(dl)
     rect(x,A.vy-20,x+w,A.vy,C.panel); line(x,A.vy-20,x+w,A.vy-20,C.line); line(x,A.vy,x+w,A.vy,C.line)
-    text(x+9,A.vy-17,C.muted,'Velocity'); text(A.gx+8,A.vy-17,C.faint,'1 – 127')
-    text(x+12,A.vy+4,C.faint,'127'); text(x+30,A.bottom-16,C.faint,'1')
+    -- With MPE editing on, the lane shows velocity, slide or pressure.
+    local lane_tab
+    local lane_name='Velocity'
+    if S.expression then
+      local tab_x=A.gx+8
+      for _,tab in ipairs(EXPRESSION_LANES) do
+        local tw=ui:text_width(tab[2]); local active=S.exprLane==tab[1]
+        local over=hovered and not S.drag and inside(mx,my,tab_x-4,A.vy-20,tab_x+tw+4,A.vy)
+        if over then lane_tab=tab[1]; ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_Hand) end
+        if active then lane_name=tab[2]; line(tab_x,A.vy-2,tab_x+tw,A.vy-2,C.accent,2) end
+        text(tab_x,A.vy-17,active and C.accent_text or over and C.text or C.muted,tab[2])
+        ui:anchor('lane '..tab[2],tab_x-4,A.vy-20,tab_x+tw+4,A.vy)
+        tab_x=tab_x+tw+ui.space.md
+      end
+      text(tab_x,A.vy-17,C.faint,expr_lane and '0 – 127' or '1 – 127')
+    else text(A.gx+8,A.vy-17,C.faint,'1 – 127') end
+    text(x+9,A.vy-17,C.muted,lane_name)
+    text(x+12,A.vy+4,C.faint,'127'); text(x+30,A.bottom-16,C.faint,expr_lane and '0' or '1')
     ImGui.DrawList_PushClipRect(dl,A.gx,A.vy,x+w,A.bottom,true)
     line(A.gx,A.vy+A.vh/2,x+w,A.vy+A.vh/2,C.velocity_mid)
     local ghost_velocity_hit
-    for _,entry in ipairs(visible.ghost_velocity) do local n=entry.n
+    if expr_lane then
+      for i,n in ipairs(S.notes) do
+        -- Notes in a plain clip own no expression; they draw nothing here.
+        if n.e>S.start and n.s<S.start+S.span and n.initial and not (n.selected and expression_editable(n)) then
+          draw_envelope(n,envelope(i,n,expr_lane),lane_y,ui.alpha(clip_color(n.take_index),0x70),false,1)
+        end
+      end
+      for _,i in ipairs(expr_notes) do local n=S.notes[i]
+        draw_envelope(n,envelope(i,n,expr_lane),lane_y,clip_color(n.take_index),true,2)
+      end
+    end
+    for _,entry in ipairs(expr_lane and {} or visible.ghost_velocity) do local n=entry.n
       local xx=tx(n.s)+(n.take_index-(#B.clips+1)/2)*4; local yy=A.bottom-4-(n.vel-1)/126*(A.vh-10)
       dashed(xx,A.bottom-3,xx,yy,clip_color(n.take_index))
       ImGui.DrawList_AddCircle(dl,xx,yy,3,clip_color(n.take_index))
       if in_vel and math.abs(mx-xx)<8 and math.abs(my-yy)<8 then ghost_velocity_hit=n end
     end
-    for _,entry in ipairs(visible.velocity) do local n=entry.n
+    for _,entry in ipairs(expr_lane and {} or visible.velocity) do local n=entry.n
       local xx=tx(n.s)+(n.take_index-(#B.clips+1)/2)*4; local yy=A.bottom-4-(n.vel-1)/126*(A.vh-10)
       local color=clip_color(n.take_index)
       line(xx,A.bottom-3,xx,yy,n.muted and C.muted or color,n.selected and 2 or 1)
       ImGui.DrawList_AddCircleFilled(dl,xx,yy,n.selected and 4 or 3,color)
     end
     ImGui.DrawList_PopClipRect(dl)
+    local function clip_to(dimension,fn)
+      local top,bottom=dimension=='pb' and A.gy or A.vy,dimension=='pb' and A.gy+A.gh or A.bottom
+      ImGui.DrawList_PushClipRect(dl,A.gx,top,x+w,bottom,true); fn(); ImGui.DrawList_PopClipRect(dl)
+    end
+    -- An unselected note's line under the pointer lights up: it can be grabbed.
+    if expr_hit and expr_hit.select then
+      local n=S.notes[expr_hit.note]
+      clip_to(expr_hit.dim,function()
+        draw_envelope(n,envelope(expr_hit.note,n,expr_hit.dim),expr_hit.dim=='pb' and function(v) return pitch_y(n,v) end or lane_y,
+          expr_hit.dim=='pb' and C.note_selected or clip_color(n.take_index),true,2)
+      end)
+    end
+    local dragging=S.drag and S.drag.kind=='expr' and {note=S.drag.note,dim=S.drag.dim,point=S.drag.index}
+    local selected_point=not dragging and S.exprSelected
+    if selected_point then
+      local xx,yy,v=point_at(selected_point)
+      if xx then clip_to(selected_point.dim,function()
+        ImGui.DrawList_AddCircleFilled(dl,xx,yy,5,C.accent); mark_point(selected_point.dim,xx,yy,v)
+      end) end
+    end
+    local marked=dragging or expr_hit and expr_hit.point and expr_hit
+    if marked and not (selected_point and marked.note==selected_point.note and marked.point==selected_point.point) then
+      local xx,yy,v=point_at(marked)
+      if xx then clip_to(marked.dim,function() mark_point(marked.dim,xx,yy,v) end) end
+    elseif expr_hit and not expr_hit.point then
+      -- Where a drag would add a point, and the value there.
+      local n=S.notes[expr_hit.note]
+      local yy=expr_hit.dim=='pb' and pitch_y(n,expr_hit.v) or lane_y(expr_hit.v)
+      if yy then clip_to(expr_hit.dim,function()
+        ImGui.DrawList_AddCircle(dl,mx,yy,4,C.note_selected,0,1.5); mark_point(expr_hit.dim,mx,yy,expr_hit.v)
+      end) end
+    end
     if playq>=S.start and playq<=S.start+S.span then line(tx(playq),A.ry,tx(playq),A.bottom,C.accent,1.5) end
     local overview_y=y+h-17
     ImGui.DrawList_AddRectFilled(dl,A.gx,overview_y,x+w,y+h,C.well,6,ImGui.DrawFlags_RoundCornersBottomRight)
@@ -705,10 +1090,17 @@ function E.run(r,initial_item,dir)
 
     if not B.take then return end
     if hovered and not S.drag then
-      if hit and hint_hovered then
+      if expr_hit and hint_hovered then
+        ImGui.SetTooltip(ctx,(expr_hit.point and 'Drag: move the point. Click: select it, then nudge it with the arrows.\nDouble-click or Delete: remove it. Right-click: more.' or
+          'Drag: add a point here and move it.')..'\nShift: one direction'..(expr_hit.dim=='pb' and ', Alt: semitones' or '')..
+          '. Ctrl+drag: move the whole '..(expr_hit.dim=='pb' and 'bend' or 'line')..' of the selected notes.')
+      elseif hit and hint_hovered then
         local n=S.notes[hit]
         ImGui.SetTooltip(ctx,B.clips[n.take_index].track_name..' · '..M.pitch_name(n.pitch)..' · Velocity '..n.vel..
           (#candidates>1 and '\nOverlapping notes: click a colored part, or right-click to pick by name.' or ''))
+      end
+      if hint_hovered and over_phones then
+        ImGui.SetTooltip(ctx,'Preview: hear notes as you select, add or move them, and when you click a key.')
       end
       if hint_hovered and (ghost_hit or ghost_velocity_hit) then ImGui.SetTooltip(ctx,'Repeat — read-only. Edit the note or velocity in the first pass.') end
       local wheel,horizontal=ImGui.GetMouseWheel(ctx)
@@ -724,11 +1116,17 @@ function E.run(r,initial_item,dir)
         else S.row=S.row-wheel*3 end
       end
       if horizontal~=0 then S.start=math.max(0,S.start-horizontal*S.span/12) end
-      if in_grid and hit then
+      if expr_hit then ImGui.SetMouseCursor(ctx,expr_hit.point and ImGui.MouseCursor_ResizeAll or ImGui.MouseCursor_Hand)
+      elseif in_grid and hit then
         if grabbed_edge(S.notes[hit]) then ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_ResizeEW) end
       elseif S.draw and in_grid then ImGui.SetMouseCursor(ctx,ImGui.MouseCursor_Hand) end
       if ImGui.IsMouseClicked(ctx,1) then
-        if in_grid then
+        if expr_hit and (expr_hit.point or expr_hit.dim~='pb') then
+          -- The menu acts on the note it was opened on.
+          local n=S.notes[expr_hit.note]
+          if not n.selected then if not shift then deselect() end; n.selected=true; B:set_active(n.take_index); S.range=nil end
+          S.exprMenu=expr_hit; ImGui.OpenPopup(ctx,'expr_menu')
+        elseif in_grid then
           local before=M.copy(S.notes); if not shift then deselect() end
           S.drag={kind='select',mx=mx,my=my,q=tq(mx),p=pitch(my),before=before,add=shift,right=true,candidates=candidates,hit=hit}
         else ImGui.OpenPopup(ctx,'note_menu') end
@@ -736,8 +1134,12 @@ function E.run(r,initial_item,dir)
       if ImGui.IsMouseClicked(ctx,2) then S.drag={kind='pan',mx=mx,my=my,start=S.start,row=S.row} end
       if ImGui.IsMouseClicked(ctx,0) then
         S.follow=false
+        if not expr_hit then S.exprPoint=nil end
         local q=math.max(0,tq(mx)); local p=pitch(my)
         if my>=overview_y then S.drag={kind='overview'}
+        elseif over_phones then
+          S.preview=not S.preview; if not S.preview then audition:close() end
+          S.status=S.preview and 'Preview on - selecting notes plays them.' or 'Preview off.'
         elseif loop_strip then
           local b=B.clips[loop_strip]
           local ok,message=B:unroll(L,loop_strip,S.matchLoop)
@@ -746,7 +1148,7 @@ function E.run(r,initial_item,dir)
         elseif inside(mx,my,x,A.gy,A.gx,A.gy+A.gh) then
           if not shift then deselect() end
           for _,n in ipairs(S.notes) do if n.pitch==p then n.selected=true end end
-          preview(p)
+          preview(p,nil,true)
           S.status=M.pitch_name(p)..' - selected notes at this pitch'
         elseif inside(mx,my,A.gx,A.ry,x+w,A.gy) then
           S.cursor=S.snap and M.snap(q,grid()) or q
@@ -755,7 +1157,54 @@ function E.run(r,initial_item,dir)
           else S.drag={kind='ruler',mx=mx,my=my,start=S.start,span=S.span,q=q,before=M.copy(S.notes)} end
           if ImGui.IsMouseDoubleClicked(ctx,0) then fit(selected_count()>0,false,true); S.drag=nil end
         elseif inside(mx,my,x,A.vy-20,x+w,A.vy) then
-          S.drag={kind='lane',my=my,lane=S.lane}
+          if lane_tab then S.exprLane=lane_tab else S.drag={kind='lane',my=my,lane=S.lane} end
+        elseif expr_hit and not S.draw then
+          local n=S.notes[expr_hit.note]
+          if expr_hit.select then
+            if not shift then deselect() end
+            n.selected=true; S.range=nil
+          end
+          -- The sidebar follows the clip being shaped.
+          B:set_active(n.take_index)
+          local points=M.copy(envelope(expr_hit.note,n,expr_hit.dim))
+          local index=expr_hit.point
+          if ctrl then
+            -- The whole envelope of every selected MPE note moves together.
+            local base={}
+            for i,o in ipairs(S.notes) do if o.selected and expression_editable(o) then base[i]=M.copy(envelope(i,o,expr_hit.dim)) end end
+            S.drag={kind='expr_offset',dim=expr_hit.dim,base=base,preview={},mx=mx,my=my}
+          elseif index and ImGui.IsMouseDoubleClicked(ctx,0) then
+            delete_point(expr_hit)
+          elseif not index then
+            index=#points+1
+            for k,p in ipairs(points) do if p.t>expr_hit.t then index=k; break end end
+            table.insert(points,index,{t=expr_hit.t,v=expr_hit.v})
+          end
+          if not ctrl and not (index and expr_hit.point and ImGui.IsMouseDoubleClicked(ctx,0)) then
+            S.drag={kind='expr',note=expr_hit.note,dim=expr_hit.dim,points=points,index=index,created=not expr_hit.point,
+              mx=mx,my=my,origin={t=points[index].t,v=points[index].v}}
+          end
+        elseif S.draw and (in_vel and expr_lane or in_grid and show_pitch and (expr_hit or hit and S.notes[hit].selected and expression_editable(S.notes[hit]))) then
+          -- Draw over the note under the pointer, or in the lane over every selected note.
+          local targets={}
+          if in_grid then targets[1]=expr_hit and expr_hit.note or hit
+          else
+            for _,i in ipairs(expr_notes) do targets[#targets+1]=i end
+          end
+          if #targets>0 then S.drag={kind='expr_draw',dim=in_grid and 'pb' or expr_lane,targets=targets,preview={}}
+          else S.status='Select MPE notes, then draw their '..(in_grid and 'pitch' or lane_name:lower())..'.' end
+        elseif in_vel and expr_lane then
+          -- A click on a note's line selects that note.
+          local best,dist
+          for i,n in ipairs(S.notes) do if q>=n.s and q<=n.e and n.initial then
+            local dd=math.abs(lane_y(X.value(envelope(i,n,expr_lane),q-n.s))-my)
+            if dd<8 and (not dist or dd<dist) then best,dist=i,dd end
+          end end
+          if not shift then deselect() end
+          if best then
+            local n=S.notes[best]; n.selected=true; B:set_active(n.take_index); S.range=nil
+            if not expression_editable(n) then S.status='Not an MPE note. Convert the clip to MPE to edit its expression.' end
+          end
         elseif in_vel then
           local closest,dist
           for _,entry in ipairs(visible.velocity) do local i,n=entry.i,entry.n
@@ -780,11 +1229,12 @@ function E.run(r,initial_item,dir)
             local before=M.copy(S.notes)
             if hit then table.remove(S.notes,hit)
             else
-              deselect(); local start=snapping(alt) and M.floor(q,grid()) or q
-              S.notes[#S.notes+1]={s=start,e=start+grid(),pitch=p,vel=S.velocity,channel=S.channel,selected=true,muted=false,take_index=B.active}; preview(p)
+              local cell=shown_grid(A.gw); deselect(); local start=snapping(alt) and M.floor(q,cell) or q
+              S.notes[#S.notes+1]={s=start,e=start+cell,pitch=p,vel=S.velocity,channel=S.channel,selected=true,muted=false,take_index=B.active}; preview(nil,{S.notes[#S.notes]})
             end
-            S.drag={kind=S.draw and 'draw' or 'add',before=before,changed=true,lastcell=math.floor(q/grid()),pitch=p,erase=hit~=nil,visited={}}
-            S.drag.visited[math.floor(q/grid())..':'..p]=true
+            local cell=shown_grid(A.gw)
+            S.drag={kind=S.draw and 'draw' or 'add',before=before,changed=true,cell=cell,lastcell=math.floor(q/cell),pitch=p,erase=hit~=nil,visited={}}
+            S.drag.visited[math.floor(q/cell)..':'..p]=true
           elseif hit then
             local n=S.notes[hit]
             B:set_active(n.take_index)
@@ -792,8 +1242,11 @@ function E.run(r,initial_item,dir)
             if shift then n.selected=not n.selected
             elseif not n.selected then deselect(); n.selected=true end
             S.range=nil
+            if S.expression and n.selected and not expression_editable(n) then
+              S.status='Not an MPE note. Convert the clip to MPE to edit its expression.'
+            end
             if n.selected then
-              preview(n.pitch)
+              preview(nil,{n},false,shift)
               -- Grab the drawn edge. A note running past the pass end is drawn
               -- clipped there; its hidden overhang is trimmed so the edge
               -- follows the mouse from where the user grabbed it.
@@ -829,30 +1282,85 @@ function E.run(r,initial_item,dir)
       elseif d.kind=='select' then
         local q1,q2=math.min(d.q,tq(mx)),math.max(d.q,tq(mx))
         local y1,y2=math.min(d.my,my),math.max(d.my,my)
+        local fresh
+        d.played=d.played or {}
         for i,n in ipairs(S.notes) do
           local ny,ey=vertical(n); local a,z=edges(n)
           n.selected=(d.add and d.before[i].selected) or (ny~=nil and a<q2 and z>q1 and ny<y2 and ey>y1)
+          if n.selected and not d.before[i].selected and not d.played[i] then
+            d.played[i]=true; fresh=fresh or {}; fresh[#fresh+1]=n
+          end
         end
+        if fresh then preview(nil,fresh,false,true) end
         d.moved=d.moved or math.abs(mx-d.mx)>=4 or math.abs(my-d.my)>=4
         S.range=M.selection_range(d.q,tq(mx),S.snap and grid() or 0,d.moved)
       elseif d.kind=='draw' and in_grid then
-        local q=math.max(0,tq(mx)); local p=pitch(my); local cell=math.floor(q/grid())
+        local g=d.cell
+        local q=math.max(0,tq(mx)); local p=pitch(my); local cell=math.floor(q/g)
         local low,high=math.min(cell,d.lastcell),math.max(cell,d.lastcell)
         for c=low,high do
           local id=c..':'..p
-          if not d.visited[id] and editable_time(c*grid()) then
+          if not d.visited[id] and editable_time(c*g) then
             rendering:invalidate()
             d.visited[id]=true
             if d.erase then
-              for i=#S.notes,1,-1 do local n=S.notes[i]; if n.take_index==B.active and n.pitch==p and n.s<(c+1)*grid() and n.e>c*grid() then table.remove(S.notes,i) end end
+              for i=#S.notes,1,-1 do local n=S.notes[i]; if n.take_index==B.active and n.pitch==p and n.s<(c+1)*g and n.e>c*g then table.remove(S.notes,i) end end
             else
               local occupied=false
-              for _,n in ipairs(S.notes) do if n.take_index==B.active and n.pitch==p and n.s<(c+1)*grid() and n.e>c*grid() then occupied=true; break end end
-              if not occupied then S.notes[#S.notes+1]={s=c*grid(),e=(c+1)*grid(),pitch=p,vel=S.velocity,channel=S.channel,selected=true,muted=false,take_index=B.active} end
+              for _,n in ipairs(S.notes) do if n.take_index==B.active and n.pitch==p and n.s<(c+1)*g and n.e>c*g then occupied=true; break end end
+              if not occupied then S.notes[#S.notes+1]={s=c*g,e=(c+1)*g,pitch=p,vel=S.velocity,channel=S.channel,selected=true,muted=false,take_index=B.active} end
             end
           end
         end
         d.lastcell=cell
+      elseif d.kind=='expr' then
+        if not d.moved and (math.abs(mx-d.mx)>3 or math.abs(my-d.my)>3) then d.moved=true end
+        if d.moved then
+          local n=S.notes[d.note]; local points=d.points
+          local t=d.origin.t+(mx-d.mx)/A.gw*S.span
+          local scale=d.dim=='pb' and 8192/(S.bendRange*S.rowh) or 127/(A.vh-10)
+          local v=d.origin.v+(d.my-my)*scale
+          if shift then if math.abs(mx-d.mx)>math.abs(my-d.my) then v=d.origin.v else t=d.origin.t end end
+          if d.dim=='pb' and alt then v=8192+math.floor(semitones(v)+.5)/S.bendRange*8192 end
+          local before,after=points[d.index-1],points[d.index+1]
+          t=d.index==1 and 0 or M.clamp(t,before.t,after and after.t or n.e-n.s)
+          points[d.index]={t=t,v=M.clamp(v,0,X.MAX[d.dim])}
+        end
+      elseif d.kind=='expr_offset' then
+        d.moved=d.moved or math.abs(my-d.my)>3
+        if d.moved then
+          local scale=d.dim=='pb' and 8192/(S.bendRange*S.rowh) or 127/(A.vh-10)
+          local dv=(d.my-my)*scale
+          if d.dim=='pb' and alt then dv=semitone_value(math.floor(semitones(8192+dv)+.5))-8192 end
+          for i,points in pairs(d.base) do
+            local moved={}
+            for k,p in ipairs(points) do moved[k]={t=p.t,v=M.clamp(p.v+dv,0,X.MAX[d.dim])} end
+            d.preview[i]=moved
+          end
+        end
+      elseif d.kind=='expr_draw' then
+        -- A sample per 2 px; only the notes it falls on are rebuilt.
+        if not d.lastX or math.abs(mx-d.lastX)>=2 or math.abs(my-d.lastY)>=2 then
+          d.lastX,d.lastY=mx,my
+          local sample={q=tq(mx),y=my}
+          for _,i in ipairs(d.targets) do local n=S.notes[i]
+            if sample.q>=n.s and sample.q<=n.e then
+            local value
+            if d.dim=='pb' then
+              value=function(yy)
+                local ny,ey=vertical(n); if not ny then return 8192 end
+                local v=8192+((ny+ey)/2-yy)/S.rowh/S.bendRange*8192
+                return alt and 8192+math.floor(semitones(v)+.5)/S.bendRange*8192 or v
+              end
+            else value=function(yy) return (A.bottom-4-yy)/(A.vh-10)*127 end end
+            d.inner=d.inner or {}; d.inner[i]=d.inner[i] or {}
+            local inner,t=d.inner[i],sample.q-n.s
+            local k=#inner+1; while k>1 and inner[k-1].t>t do k=k-1 end
+            table.insert(inner,k,{t=t,v=M.clamp(value(sample.y),0,X.MAX[d.dim])})
+            d.preview[i]=drawn(X.envelope(n,d.dim,note_tick(n)),n,inner)
+            end
+          end
+        end
       elseif d.kind=='velocity_draw' and in_vel then
         local q=tq(mx); local a,b=math.min(d.lastq,q)-S.span/A.gw*5,math.max(d.lastq,q)+S.span/A.gw*5
         for _,n in ipairs(S.notes) do if n.s>=a and n.s<=b then n.vel=M.clamp(math.floor((A.bottom-my)/A.vh*127+0.5),1,127); d.changed=true end end
@@ -890,7 +1398,7 @@ function E.run(r,initial_item,dir)
             S.notes=M.copy(base)
             if d.kind=='move' then
               M.move(S.notes,delta,dp,0)
-              if d.lastPitch~=pitch(my) then preview(pitch(my)); d.lastPitch=pitch(my) end
+              if d.lastPitch~=pitch(my) then preview(nil,{{pitch=pitch(my),vel=S.velocity,channel=S.channel,s=d.before[d.index].s,e=d.before[d.index].e,take_index=d.before[d.index].take_index}}); d.lastPitch=pitch(my) end
             else M.resize(S.notes,delta,d.kind,0) end
           end
           d.changed=true
@@ -917,6 +1425,23 @@ function E.run(r,initial_item,dir)
             ImGui.OpenPopup(ctx,'note_menu')
           end
         end
+        if d.kind=='expr' then
+          local n=S.notes[d.note]
+          if not d.moved then
+            -- A click selects the point, for the arrows and Delete.
+            if d.created then S.status='Drag the line to add a point there.'
+            else remember_point(n,d.dim,d.points[d.index]); S.status='Point selected: arrows nudge it, Delete removes it.' end
+          else
+            remember_point(n,d.dim,d.points[d.index])
+            write_expression({[d.note]=d.points},d.dim)
+          end
+        elseif d.kind=='expr_offset' then
+          local changes; for i,points in pairs(d.preview) do changes=changes or {}; changes[i]=points end
+          if changes then write_expression(changes,d.dim,'Move '..X.NAMES[d.dim]) end
+        elseif d.kind=='expr_draw' then
+          local changes; for i,points in pairs(d.preview) do changes=changes or {}; changes[i]=points end
+          if changes then write_expression(changes,d.dim,'Draw '..X.NAMES[d.dim]) end
+        end
         if d.changed then commit(S.notes,({draw='Draw notes',add='Add / delete note',move='Move notes',left='Change note start',right='Change note length',velocity='Change velocity',velocity_draw='Draw velocity'})[d.kind] or 'Edit notes') end
       end
     end
@@ -934,11 +1459,24 @@ function E.run(r,initial_item,dir)
       end
       ImGui.EndPopup(ctx)
     end
+    if ImGui.BeginPopup(ctx,'expr_menu') then
+      local h=S.exprMenu; local n=h and S.notes[h.note]
+      if n then
+        local name=X.NAMES[h.dim]
+        if h.point and ImGui.MenuItem(ctx,h.point>1 and 'Delete point' or 'Reset starting value','Delete') then delete_point(h) end
+        if ImGui.MenuItem(ctx,'Simplify '..name..' of selected notes') then simplify_expression(h.dim) end
+        if ImGui.MenuItem(ctx,'Clear '..name) then write_expression({[h.note]={{t=0,v=X.NEUTRAL[h.dim]}}},h.dim,'Clear '..name) end
+        if ImGui.MenuItem(ctx,'Clear expression of selected notes') then clear_expression() end
+      end
+      ImGui.EndPopup(ctx)
+    end
     if ImGui.BeginPopup(ctx,'note_menu') then
       if ImGui.MenuItem(ctx,'Duplicate','Ctrl+D') then duplicate() end
       if ImGui.MenuItem(ctx,'Copy','Ctrl+C') then copy() end
       if ImGui.MenuItem(ctx,'Paste','Ctrl+V') then paste() end
       if ImGui.MenuItem(ctx,'Delete','Delete') then delete_selected() end
+      if S.expression and ImGui.MenuItem(ctx,'Simplify expression') then simplify_expression() end
+      if S.expression and ImGui.MenuItem(ctx,'Clear expression') then clear_expression() end
       ImGui.Separator(ctx)
       if ImGui.MenuItem(ctx,'Loop selection','Ctrl+L') then loop_selection() end
       if ImGui.MenuItem(ctx,'Show all notes','X') then fit(false,false,true) end
@@ -969,7 +1507,7 @@ function E.run(r,initial_item,dir)
     if visible then
       ui:wrapped('Double-click an empty cell to add a note; double-click a note to delete it. B toggles drawing. Drag a note or its left or right edge, or drag a rectangle to select.')
       ImGui.Separator(ctx)
-      ui:text('Ctrl+A / Shift+click   Select\nCtrl+C / X / V         Copy / cut / paste\nCtrl+D                 Duplicate time including silence\nShift+click on ruler   Play from there\nCtrl+Z / Shift+Ctrl+Z  Undo / redo in REAPER\nCtrl+1 / 2 / 3 / 4     Grid: finer / coarser / triplets / snap\nArrows                 Move notes\nShift+Up / Down        Transpose by an octave\nShift+Left / Right     Change length\nAlt+drag               Velocity (middle of a note)\nCtrl+drag              Copy notes\nF / Z / X / 0          Fold / zoom / all clips / mute\nSpace / Ctrl+L         Transport / loop selection\nMiddle button          Scroll the piano roll')
+      ui:text('Ctrl+A / Shift+click   Select\nCtrl+C / X / V         Copy / cut / paste\nCtrl+D                 Duplicate time including silence\nShift+click on ruler   Play from there\nCtrl+Z / Shift+Ctrl+Z  Undo / redo in REAPER\nCtrl+1 / 2 / 3 / 4     Grid: finer / coarser / triplets / snap\nArrows                 Move notes\nShift+Up / Down        Transpose by an octave\nShift+Left / Right     Change length\nAlt+drag               Velocity (middle of a note)\nCtrl+drag              Copy notes\nF / Z / X / 0          Fold / zoom / all clips / mute\nE                      MPE: pitch, slide, pressure per note\nSpace / Ctrl+L         Transport / loop selection\nMiddle button          Scroll the piano roll')
       ImGui.Separator(ctx)
       ui:wrapped('Select clips on several tracks in REAPER to edit them together; clicking the track list picks where new notes go. Darker notes = lower velocity. Escape cancels a gesture. One gesture = one Undo across all tracks. The note clipboard works inside this window; pasting goes to the active clip.')
       ImGui.End(ctx)
@@ -982,6 +1520,10 @@ function E.run(r,initial_item,dir)
     if B.take and not B:valid() then attach(B:selected_items()) end
     local now=r.time_precise()
     audition:tick()
+    -- The instrument track runs live while Preview is on, so notes sound at once.
+    local listening=S.preview and B.take and B:valid()
+    audition:live(listening and B.project or nil,listening and B.track or nil)
+    if audition.hold and not ImGui.IsMouseDown(ctx,0) then audition:stop() end
     if not S.lastHeartbeat or now-S.lastHeartbeat>.25 then
       S.lastHeartbeat=now; r.SetExtState('FluentMIDIEditor','heartbeat',tostring(now),false)
     end
@@ -1047,11 +1589,11 @@ function E.run(r,initial_item,dir)
     if not ended then error(end_error,0) end
     if S.open then r.defer(function()
       local ok,err=xpcall(tick,debug.traceback)
-      if not ok then r.SetExtState('FluentMIDIEditor','error',err,false); stop_preview(); r.MB(err,'Fluent MIDI Editor',0) end
+      if not ok then r.SetExtState('FluentMIDIEditor','error',err,false); audition:close(); r.MB(err,'Fluent MIDI Editor',0) end
     end) end
   end
   r.atexit(function()
-    stop_preview()
+    audition:close()
     if r.GetExtState('FluentMIDIEditor','instance')==token then
       r.DeleteExtState('FluentMIDIEditor','heartbeat',false); r.DeleteExtState('FluentMIDIEditor','instance',false)
       for _,k in ipairs(saved) do r.SetExtState('FluentMIDIEditor',k,tostring(k=='rowh' and S.userRowh or S[k]),true) end
