@@ -6,7 +6,7 @@ A dockable piano roll for REAPER, inspired by Ableton's. Select MIDI clips on
 several tracks and edit them together on one timeline: bass against kick,
 call against response. No setup, no custom actions to wire up first.
 
-![Editing a lead and a bass clip together in Fluent MIDI Editor](docs/demo.gif)
+![Drawing a bass line, duplicating it, then bending, drawing a vibrato and shaping slide and pressure on MPE chord notes in Fluent MIDI Editor](docs/demo.gif)
 
 > **Beta.** It is tested on one setup and has automated tests, but it has not met
 > your projects yet. Please [report what breaks](https://github.com/onliner10/fluent-midi-editor/issues),

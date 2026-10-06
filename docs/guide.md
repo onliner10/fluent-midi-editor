@@ -254,9 +254,10 @@ smooth points that are easy to reshape, staying within about a quarter of a
 semitone (or 6 of 127) of what was played.
 
 A selected note's flat pitch line runs through its middle. Note gestures keep
-working there: its edges still resize the note, Alt + drag still sets velocity,
-Ctrl + drag on a flat line still copies the note, and right-clicking the line
-opens the note menu. To move the note, grab it above or below the line. Each
+working there: its edges still resize the note, Alt + drag and Ctrl + drag on a
+flat line still set velocity and copy the note (on a bent line they snap to
+semitones and move the whole bend), and right-clicking the line opens the note
+menu. To move the note, grab it above or below the line. Each
 finished gesture and each nudge is one Undo step.
 
 The editor shows the MIDI as breakpoints: a value that holds and then jumps is

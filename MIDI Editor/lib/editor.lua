@@ -785,12 +785,13 @@ function E.run(r,initial_item,dir)
     end
     -- Note gestures keep their place on the notes: an edge still resizes
     -- (except right on a point), Alt still sets velocity and Ctrl still
-    -- copies on a flat line, and another note's body is not taken over by a
+    -- copies on a flat line (on a bent one they snap to semitones and move
+    -- the whole bend), and another note's body is not taken over by a
     -- line crossing it.
     if expr_hit and expr_hit.dim=='pb' and hit then
       local edge=grabbed_edge(S.notes[hit])
       if edge and not (expr_hit.point and expr_hit.d<5) then expr_hit=nil
-      elseif not expr_hit.point and (alt or ctrl and expr_hit.flat) then expr_hit=nil
+      elseif not expr_hit.point and expr_hit.flat and (alt or ctrl) then expr_hit=nil
       elseif expr_hit.select and hit~=expr_hit.note then expr_hit=nil end
     end
     local function draw_envelope(n,points,ymap,color,handles,width)
@@ -1161,8 +1162,10 @@ function E.run(r,initial_item,dir)
           local n=S.notes[expr_hit.note]
           if expr_hit.select then
             if not shift then deselect() end
-            n.selected=true; B:set_active(n.take_index); S.range=nil
+            n.selected=true; S.range=nil
           end
+          -- The sidebar follows the clip being shaped.
+          B:set_active(n.take_index)
           local points=M.copy(envelope(expr_hit.note,n,expr_hit.dim))
           local index=expr_hit.point
           if ctrl then
