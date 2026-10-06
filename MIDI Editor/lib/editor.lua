@@ -737,7 +737,7 @@ function E.run(r,initial_item,dir)
     local function probe(dimension,ymap,candidates,select)
       local best,dist,segment
       -- Low rows leave room to grab the note above and below its pitch line.
-      local band=dimension=='pb' and math.min(4,S.rowh/5) or 4
+      local band=dimension=='pb' and math.min(5,S.rowh/4) or 4
       for _,i in ipairs(candidates) do local n=S.notes[i]
         local points=envelope(i,n,dimension)
         for k,p in ipairs(points) do
